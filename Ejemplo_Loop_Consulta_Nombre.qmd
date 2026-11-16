@@ -1,0 +1,84 @@
+---
+title: "Ejemplo de loop"
+format: html
+editor: visual
+---
+
+# Leemos los datos
+
+Este es un archivo de ejemplo de como tomar la especie presente en la base de 
+datos y consultar el nombre científico que aparecen en el servicio GBIF | Global Biodiversity Information Facility
+
+## Cargamos los datos
+```{r}
+library(readxl)
+GBIF_Colon_Coco_2026_TableToExcel_original_descargada_de_Gbif <- read_excel("data/GBIF_Colon_Coco_2026_TableToExcel original descargada de Gbif.xlsx")
+
+kableExtra::kable(head(GBIF_Colon_Coco_2026_TableToExcel_original_descargada_de_Gbif))
+```
+
+## Actualizamos la Especies
+
+1. Creamos un vector donde pondremos los nombre
+2. Tomamos el nombre que esta en la bd y consultamos GBIF usando `rgbif`
+3. Agregar el vectos al `data.frame` con el nombre actualizado.
+
+```{r}
+library(dplyr)
+library(rgbif)
+
+# Obtener nombres únicos
+listaDeNombres <- unique(
+  GBIF_Colon_Coco_2026_TableToExcel_original_descargada_de_Gbif$scientificName
+)
+
+Nombres <- data.frame(
+  dbName = listaDeNombres,
+  gbifName = NA_character_
+)
+
+# Crear barra de progreso
+pb <- txtProgressBar(
+  min = 0,
+  max = length(listaDeNombres),
+  style = 3
+)
+
+# Consultar GBIF
+for (i in seq_along(listaDeNombres)) {
+
+  nombre <- listaDeNombres[i]
+
+  resultado <- tryCatch(
+    rgbif::name_backbone(
+      name = nombre,
+      kingdom = "Animalia",
+      strict = TRUE
+    ),
+    error = function(e) NULL
+  )
+
+  if (!is.null(resultado) &&
+      !is.null(resultado$scientificName)) {
+
+    Nombres$gbifName[i] <- resultado$scientificName
+
+  }
+
+  # Actualizar barra de progreso
+  setTxtProgressBar(pb, i)
+}
+
+# Cerrar barra de progreso
+close(pb)
+
+
+# Incorporar nombres a la tabla original
+GBIF_Colon_Coco_2026_TableToExcel_original_descargada_de_Gbif <-
+  GBIF_Colon_Coco_2026_TableToExcel_original_descargada_de_Gbif %>%
+  left_join(
+    Nombres,
+    by = c("scientificName" = "dbName")
+  )
+```
+
