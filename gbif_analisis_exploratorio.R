@@ -92,7 +92,7 @@ filas_na <- datos_gbif_final %>%
   filter(is.na(eventDate_new) & is.na(eventDate))
 
 # Visualizar registros
-View(filas_na)
+#View(filas_na)
 
 # Contar registros
 nrow(filas_na)
@@ -140,38 +140,104 @@ resumen_anual_mensual <- datos_gbif_final %>%
 resumen_anual_mensual
 
 
-# graficar  ---------------------------------------------------------------
-library(ggplot2)
-
-ggplot(resumen_anual_mensual,
-       aes(x = factor(year),
-           y = numero_registros,
-           fill = factor(month))) +
-  geom_col(position = "dodge", width = 0.8) +
-  labs(
-    title = "Distribución temporal de registros GBIF",
-    x = "Año",
-    y = "Número de registros",
-    fill = "Mes"
-  ) +
-  scale_fill_viridis_d() +
-  theme_bw() +
-  theme(
-    legend.position = "none",
-    plot.title = element_text(
-      hjust = 0.5,
-      face = "bold",
-      size = 14
-    ),
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
-    )
-  )
-
 # -------------------------------------------------------------------------
 # numero de meses con 10 datos como minimo
 
 resumen_anual_mensual %>%
   filter(numero_registros > 10) %>%
   arrange(year, month)
+
+
+# -------------------------------------------------------------------------
+
+ggplot(datos_gbif_final, aes(x = year)) +
+  geom_histogram(
+    binwidth = 5,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribución histórica de registros GBIF",
+    x = "Año",
+    y = "Frecuencia de registros"
+  ) +
+  theme_minimal()
+
+
+# -------------------------------------------------------------------------
+# Distribucion geografica de los datos GBIF -------------------------------
+# -------------------------------------------------------------------------
+
+library(ggplot2)
+library(dplyr)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+# Obtener mapa mundial
+mundo <- ne_countries(
+  scale = "medium",
+  returnclass = "sf"
+)
+
+# Filtrar registros con coordenadas válidas
+datos_mapa <- datos_gbif_final %>%
+  filter(
+    !is.na(longitud),
+    !is.na(latitud),
+    between(longitud, -180, 180),
+    between(latitud, -90, 90)
+  )
+
+# Crear mapa
+ggplot() +
+  
+  # Fondo oceánico
+  theme_minimal() +
+  
+  # Continentes e islas
+  geom_sf(
+    data = mundo,
+    fill = "gray90",
+    color = "gray55",
+    linewidth = 0.25
+  ) +
+  
+  # Registros GBIF
+  geom_point(
+    data = datos_mapa,
+    aes(x = longitud, y = latitud),
+    color = "#D73027",
+    alpha = 0.45,
+    size = 1.2
+  ) +
+  
+  # Extensión geográfica
+  coord_sf(
+    xlim = c(-100, -88),
+    ylim = c(-3, 9),
+    expand = FALSE
+  ) +
+  
+  labs(
+    title = "Distribución geográfica de registros GBIF",
+    subtitle = "Registros de ocurrencia en la región de Galápagos",
+    x = "Longitud (°)",
+    y = "Latitud (°)",
+    caption = paste("Total de registros:", nrow(datos_mapa))
+  ) +
+  
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 14
+    ),
+    plot.subtitle = element_text(size = 10),
+    axis.title = element_text(size = 10),
+    panel.grid.major = element_line(
+      color = "gray85",
+      linewidth = 0.3
+    )
+  )
+
+# -------------------------------------------------------------------------
