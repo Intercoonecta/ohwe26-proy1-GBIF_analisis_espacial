@@ -1,0 +1,238 @@
+---
+title: "Análisis Exploratorio de Datos de Biodiversidad (GBIF)"
+subtitle: "Evaluación de completitud, cobertura espacio-temporal y selección de variables"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+## 1. Configuración y carga de datos
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code.
+
+```{r}
+#| label: setup
+#| echo: false
+# Cargar paquetes necesarios
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+```
+
+```{r}
+#| label: carga-datos
+#| echo: false
+#| warning: false
+# Cargar datos crudos
+ruta_archivo <- "data/GBIF_Colon_Coco_2026_TableToExcel original descargada de Gbif.xlsx"
+data_cruda <- read_excel(ruta_archivo)
+
+# Dimensiones generales del set de datos
+n_filas <- nrow(data_cruda)
+n_cols  <- ncol(data_cruda)
+
+cat("Total de registros (filas):", n_filas, "\n")
+cat("Total de variables (columnas):", n_cols, "\n")
+```
+
+## 2. Completitud de las variables (datos faltantes)
+
+Evaluamos la cantidad y el porcentaje de valores faltantes (`NA` o cadenas vacías) en todas las columnas del archivo para identificar qué campos tienen información suficiente.
+
+```{r}
+#| label: completitud-variables
+# Calcular NAs y porcentaje de completitud por columna
+tabla_completitud <- data_cruda |>
+  mutate(across(where(is.character), ~ na_if(trimws(.), ""))) |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "n_faltantes"
+  ) |>
+  mutate(
+    n_completos = n_filas - n_faltantes,
+    pct_faltantes = round((n_faltantes / n_filas) * 100, 2),
+    pct_completitud = round(100 - pct_faltantes, 2)
+  ) |>
+  arrange(desc(pct_completitud))
+
+# Resumen global de completitud
+tabla_completitud |>
+  summarise(
+    total_variables = n(),
+    vars_100_completas = sum(pct_completitud == 100),
+    vars_mayor_80_pct = sum(pct_completitud >= 80),
+    vars_menor_50_pct = sum(pct_completitud < 50),
+    vars_totalmente_vacias = sum(pct_completitud == 0)
+  )
+
+# Mostrar las 25 variables más completas
+head(tabla_completitud, 25)
+```
+
+## 3. Selección de variables clave para biodiversidad
+
+De las decenas de columnas que incluye una exportación estándar de GBIF, seleccionamos el subconjunto más útil para estudios de riqueza, composición taxonómica y distribución ecológica, verificando cuáles están presentes en el archivo y su nivel de completitud.
+
+```{r}
+#| label: seleccion-variables-clave
+# Definir las variables Darwin Core más relevantes para biodiversidad
+vars_clave_gbif <- c(
+  # Identificación y jerarquía taxonómica
+  "gbifID", "scientificName", "species", "acceptedScientificName", 
+  "taxonRank", "taxonomicStatus", "kingdom", "phylum", "class", 
+  "order", "family", "genus",
+  # Cobertura y calidad espacial
+  "decimalLatitude", "decimalLongitude", "coordinateUncertaintyInMeters",
+  "countryCode", "locality", "stateProvince", "depth", "elevation",
+  # Cobertura temporal
+  "eventDate", "year", "month", "day",
+  # Naturaleza del registro y esfuerzo/abundancia
+  "basisOfRecord", "occurrenceStatus", "individualCount", 
+  "institutionCode", "datasetName", "issue"
+)
+
+# Filtrar la tabla de completitud para ver el estado de las variables clave presentes
+completitud_clave <- tabla_completitud |>
+  filter(variable %in% vars_clave_gbif)
+
+# Gráfico de completitud de las variables clave para biodiversidad
+ggplot(completitud_clave, aes(x = reorder(variable, pct_completitud), y = pct_completitud)) +
+  geom_col(fill = "#2b5c8f", width = 0.7) +
+  geom_hline(yintercept = 80, linetype = "dashed", color = "#d95f02", linewidth = 0.8) +
+  coord_flip() +
+  labs(
+    title = "Completitud de las variables clave para biodiversidad",
+    subtitle = "Línea punteada indica el umbral del 80% de datos completos",
+    x = "Variable (Darwin Core)",
+    y = "Completitud (%)"
+  ) +
+  theme_minimal()
+```
+
+## 4. Evaluación de la cobertura espacial
+
+Analizamos la disponibilidad de coordenadas geográficas (`decimalLatitude` y `decimalLongitude`), el recuadro delimitador (*bounding box*) del área de estudio (Archipiélago de Colón / Galápagos - Isla del Coco) y la incertidumbre espacial de los registros.
+
+```{r}
+#| label: cobertura-espacial
+# Resumen de coordenadas válidas y límites geográficos
+resumen_espacial <- data_cruda |>
+  summarise(
+    registros_totales = n(),
+    con_coordenadas = sum(!is.na(decimalLatitude) & !is.na(decimalLongitude)),
+    sin_coordenadas = sum(is.na(decimalLatitude) | is.na(decimalLongitude)),
+    pct_georreferenciado = round((con_coordenadas / registros_totales) * 100, 2),
+    lat_min = min(decimalLatitude, na.rm = TRUE),
+    lat_max = max(decimalLatitude, na.rm = TRUE),
+    lon_min = min(decimalLongitude, na.rm = TRUE),
+    lon_max = max(decimalLongitude, na.rm = TRUE)
+  )
+
+print(resumen_espacial)
+
+# Distribución espacial de las ocurrencias
+data_cruda |>
+  filter(!is.na(decimalLatitude), !is.na(decimalLongitude)) |>
+  ggplot(aes(x = decimalLongitude, y = decimalLatitude)) +
+  geom_point(alpha = 0.35, color = "#1b9e77", size = 1.5) +
+  coord_quickmap() +
+  labs(
+    title = "Distribución espacial de los registros en GBIF",
+    subtitle = paste0(
+      "Rango Lon: [", round(resumen_espacial$lon_min, 2), ", ", round(resumen_espacial$lon_max, 2), 
+      "] | Rango Lat: [", round(resumen_espacial$lat_min, 2), ", ", round(resumen_espacial$lat_max, 2), "]"
+    ),
+    x = "Longitud decimal",
+    y = "Latitud decimal"
+  ) +
+  theme_bw()
+```
+
+## 5. Evaluación de la cobertura temporal
+
+Evaluamos el rango histórico de muestreo (`year`), la proporción de datos con fecha asignada y la distribución estacional (`month`) e interanual de los registros.
+
+```{r}
+#| label: cobertura-temporal
+# Resumen temporal
+resumen_temporal <- data_cruda |>
+  mutate(year = as.numeric(year), month = as.numeric(month)) |>
+  summarise(
+    con_anio = sum(!is.na(year)),
+    sin_anio = sum(is.na(year)),
+    pct_con_anio = round((con_anio / n()) * 100, 2),
+    anio_inicio = min(year, na.rm = TRUE),
+    anio_fin = max(year, na.rm = TRUE)
+  )
+
+print(resumen_temporal)
+
+# Serie temporal de registros por año
+data_cruda |>
+  mutate(year = as.numeric(year)) |>
+  filter(!is.na(year)) |>
+  count(year) |>
+  ggplot(aes(x = year, y = n)) +
+  geom_col(fill = "#386cb0") +
+  labs(
+    title = "Cobertura temporal de registros por año",
+    x = "Año de registro",
+    y = "Número de ocurrencias"
+  ) +
+  theme_minimal()
+
+# Cobertura estacional (por mes)
+data_cruda |>
+  mutate(month = as.numeric(month)) |>
+  filter(!is.na(month), month >= 1, month <= 12) |>
+  count(month) |>
+  ggplot(aes(x = factor(month, levels = 1:12, labels = month.abb), y = n)) +
+  geom_col(fill = "#7570b3", width = 0.7) +
+  labs(
+    title = "Distribución mensual de los registros",
+    x = "Mes",
+    y = "Número de ocurrencias"
+  ) +
+  theme_minimal()
+```
+
+## 6. Creación del set de datos depurado y resumen de biodiversidad
+
+Filtramos las columnas seleccionadas y generamos una vista preliminar de la riqueza de especies y los tipos de registro.
+
+```{r}
+#| label: dataset-depurado
+# Seleccionar solo las variables clave que existan en el archivo
+data_biodiv <- data_cruda |>
+  select(any_of(vars_clave_gbif))
+
+# Resumen rápido de biodiversidad a nivel de especie
+resumen_taxonomico <- data_biodiv |>
+  summarise(
+    total_registros = n(),
+    registros_nivel_especie = sum(!is.na(species) & trimws(species) != ""),
+    riqueza_especies = n_distinct(species, na.rm = TRUE),
+    riqueza_generos = n_distinct(genus, na.rm = TRUE),
+    riqueza_familias = n_distinct(family, na.rm = TRUE),
+    riqueza_filos = n_distinct(phylum, na.rm = TRUE)
+  )
+
+print(resumen_taxonomico)
+
+# Conteo por tipo de registro (basisOfRecord)
+if ("basisOfRecord" %in% names(data_biodiv)) {
+  data_biodiv |>
+    count(basisOfRecord, sort = TRUE) |>
+    mutate(pct = round((n / sum(n)) * 100, 2))
+}
+```
