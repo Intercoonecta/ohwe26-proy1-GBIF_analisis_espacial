@@ -17,7 +17,7 @@ dataset_id <- "cmems_obs-oc_glo_bgc-plankton_my_l3-olci-300m_P1D"
               required = TRUE)
  cmt <- import("copernicusmarine")
 
- cmt$login("hvillalobos", "Fenrir@2019")  # login y pwd de Copernicus
+ cmt$login("", "")  # login y pwd de Copernicus
 
 ## 2. Variables  ----
  #variables <- c("thetao", "so", "mlotst","zos","uo","vo","bottomT")
