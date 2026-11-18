@@ -25,9 +25,11 @@ dataset_id <- "cmems_obs-oc_glo_bgc-plankton_my_l3-olci-300m_P1D"
 
 
 ## 3. Carpeta de salida ----
-output_dir <- file.path("D:/DataExt/_Copernicus")
+output_dir <- file.path("./data/_Copernicus")
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
+fecha_inicio <- "2025-07-01"
+fecha_fin <- "2025-07-31" 
 
 ## 4. Bucle de descarga ----
 for (var in variables) {
@@ -41,8 +43,8 @@ for (var in variables) {
       maximum_longitude = -109,
       minimum_latitude = 23,
       maximum_latitude = 25,
-      start_datetime = "2025-07-01",
-      end_datetime = "2025-07-31",
+      start_datetime = fecha_inicio,
+      end_datetime = fecha_fin,
       output_filename = fname
     )
     cat(glue("Descarga completa para {var}: {fname}\n"))
@@ -50,6 +52,6 @@ for (var in variables) {
 }
 
 library(satin)
-setwd("D:/DataExt/_Copernicus")
 
-chl <- read.cmems("CHL_plankton_my_l3-olci-300m_P1D.nc")
+chl <- read.cmems("./data/_Copernicus/CHL_plankton_my_l3-olci-300m_P1D.nc")
+plot(chl)
