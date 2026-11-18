@@ -214,3 +214,119 @@ write.csv(df_biodiversidad_depurado, "data/GBIF_Colon_Coco_depurado.csv", row.na
 saveRDS(df_especies_depurado, "data/GBIF_Colon_Coco_especies_depurado.rds")
 write.csv(df_especies_depurado, "data/GBIF_Colon_Coco_especies_depurado.csv", row.names = FALSE)
 ```
+
+## 7. Variabilidad temporal (anual) por clase en `Animalia`
+
+Evaluamos la distribución y variabilidad interanual de registros y especies para cada categoría de `class` perteneciente al reino `Animalia` dentro del conjunto `df_biodiversidad_depurado`.
+
+```{r}
+#| label: variabilidad-temporal-animalia
+#| warning: false
+#| fig-width: 11
+#| fig-height: 8
+
+# 1. Filtrar Animalia, asegurar year numérico y etiquetar clases NA
+datos_animalia_anual <- df_biodiversidad_depurado |>
+  filter(kingdom == "Animalia") |>
+  mutate(
+    year = as.numeric(year),
+    class_clean = if_else(is.na(class) | trimws(class) == "", "Sin asignar (NA)", class)
+  )
+
+# Conteo anual de registros y especies únicas por clase (solo registros con año)
+serie_anual_class <- datos_animalia_anual |>
+  filter(!is.na(year)) |>
+  group_by(class_clean, year) |>
+  summarise(
+    n_registros = n(),
+    n_especies = n_distinct(species, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Tabla resumen de cobertura y variabilidad anual por clase
+resumen_variabilidad_animalia <- datos_animalia_anual |>
+  group_by(class_clean) |>
+  summarise(
+    reg_totales = n(),
+    reg_con_anio = sum(!is.na(year)),
+    reg_sin_anio = sum(is.na(year)),
+    especies_totales = n_distinct(species, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  left_join(
+    serie_anual_class |>
+      group_by(class_clean) |>
+      summarise(
+        anios_muestreados = n_distinct(year),
+        anio_min = min(year),
+        anio_max = max(year),
+        amplitud_anios = (anio_max - anio_min) + 1,
+        media_reg_anio = round(mean(n_registros), 2),
+        sd_reg_anio = round(sd(n_registros), 2),
+        cv_pct = round((sd(n_registros) / mean(n_registros)) * 100, 1),
+        max_reg_anio = max(n_registros),
+        anio_pico = year[which.max(n_registros)],
+        .groups = "drop"
+      ),
+    by = "class_clean"
+  ) |>
+  arrange(desc(anios_muestreados), desc(reg_totales))
+
+print(resumen_variabilidad_animalia, n = Inf)
+
+# Ordenar clases por número total de registros para los gráficos
+orden_clases <- resumen_variabilidad_animalia |>
+  arrange(desc(reg_totales)) |>
+  pull(class_clean)
+
+serie_anual_class <- serie_anual_class |>
+  mutate(class_clean = factor(class_clean, levels = orden_clases))
+
+# 3. Gráfico A: Mapa de calor (cobertura y brechas anuales por clase)
+p_heatmap <- ggplot(
+  serie_anual_class,
+  aes(x = year, y = factor(class_clean, levels = rev(orden_clases)), fill = n_registros)
+) +
+  geom_tile(color = "white", linewidth = 0.25) +
+  scale_fill_viridis_c(
+    option = "mako",
+    direction = -1,
+    trans = "log10",
+    name = "Registros\n(escala log10)"
+  ) +
+  scale_x_continuous(breaks = seq(1950, 2025, by = 10)) +
+  labs(
+    title = "Cobertura y variabilidad anual de registros por clase (Animalia)",
+    subtitle = "Cada celda representa un año con al menos un registro depurado (1952 - 2022)",
+    x = "Año",
+    y = "Clase (class)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 9)
+  )
+
+print(p_heatmap)
+
+# 4. Gráfico B: Variabilidad interanual detallada por clase (facetado con escala Y libre)
+p_facet <- ggplot(serie_anual_class, aes(x = year, y = n_registros)) +
+  geom_col(fill = "#2b5c8f", width = 1.2, alpha = 0.85) +
+  geom_point(color = "#d95f02", size = 1.3) +
+  facet_wrap(~ class_clean, scales = "free_y", ncol = 3) +
+  scale_x_continuous(breaks = seq(1950, 2020, by = 20)) +
+  labs(
+    title = "Variabilidad temporal anual por cada categoría de 'class' en Animalia",
+    subtitle = "Escala vertical independiente por clase para destacar pulsos y picos de muestreo",
+    x = "Año",
+    y = "Número de registros anuales"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    strip.background = element_rect(fill = "#eef3f8"),
+    strip.text = element_text(face = "bold", size = 8.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(p_facet)
+```
