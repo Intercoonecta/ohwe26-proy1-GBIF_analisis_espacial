@@ -752,9 +752,7 @@ for (nivel in c(
   print(grafico)
 }
 ```
-## 10. Conclusiones metodológicas preliminares
-
-## 9. Conclusiones
+## 9. Conclusiones metodológicas preliminares
 
 El análisis exploratorio de la base de datos de GBIF permitió caracterizar la información disponible sobre la biodiversidad marina en la región Colón–Cocos, identificando su composición taxonómica, cobertura temporal y espacial, así como las principales limitaciones asociadas a la calidad y completitud de los registros.
 
