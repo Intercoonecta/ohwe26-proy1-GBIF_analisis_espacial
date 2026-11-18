@@ -26,7 +26,7 @@
 
 ### 👥 Autores
 - 
--
+- Tomás I. Marina (CADIC-CONICET, Argentina)
 - Elmer Quispe-Salazar (IMARPE, Perú)
 
 ---
