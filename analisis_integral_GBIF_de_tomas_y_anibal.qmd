@@ -1,0 +1,582 @@
+---
+title: "Análisis integral de registros de biodiversidad GBIF"
+subtitle: "Región Colón–Cocos | Completitud, depuración y análisis espacio-temporal"
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+  project:
+  execute-dir: project
+---
+
+## 1. Objetivo y alcance
+
+Este informe integra dos procedimientos aplicados a la descarga original de GBIF: (1) evaluación de completitud, cobertura y composición de registros, y (2) preparación de un subconjunto con información temporal para su análisis anual, mensual y espacial. El archivo Excel original **no se modifica**.
+
+**Criterio de inclusión temporal.** De los 21.593 registros originales, el segundo procedimiento conservó 15.006 (69,5 %) al exigir que el registro tuviera una fecha original `eventDate` **o** una fecha completa reconstruible a partir de `year`, `month` y `day`. Los 6.587 restantes (30,5 %) carecían de ambas. La condición se reproduce en este informe para obtener el mismo subconjunto; no supone una selección por calidad taxonómica ni por tipo de registro. La completitud global se calcula sobre toda la base original.
+
+**Precaución:** un registro con año conocido, pero sin mes o día, puede quedar excluido de este subconjunto si `eventDate` también está ausente. Para conservar la información temporal disponible se crea `fecha_analisis`, que prioriza la fecha reconstruida y utiliza la fecha original como alternativa. Los resultados históricos describen *frecuencia de registros GBIF*, no tendencias de abundancia ni cambios demostrados de biodiversidad.
+
+## 2. Paquetes y carga de la base original
+
+```{r}
+#| label: setup
+#| echo: true
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+ruta_archivo <- file.path(
+  "/Users/anita/Documents/Documentos/curso R/Proyecto_final_Hackaton_2026",
+  "data",
+  "GBIF_Colon_Coco_2026_TableToExcel original descargada de Gbif.xlsx"
+)
+cat("Directorio de Quarto:", getwd(), "\n")
+cat("¿Existe el Excel?:", file.exists(ruta_archivo), "\n")
+if (!file.exists(ruta_archivo)) {
+  stop("No se encontró el archivo: ", ruta_archivo,
+       ". Verifica la carpeta 'data' dentro del proyecto.")
+}
+
+datos_gbif <- read_excel(ruta_archivo)
+n_filas <- nrow(datos_gbif)
+n_cols <- ncol(datos_gbif)
+cat("Registros originales:", n_filas, "\n")
+cat("Variables originales:", n_cols, "\n")
+
+# Se mantienen los datos crudos separados de sus derivados.
+```
+
+## 3. Completitud de las variables
+
+Se consideran faltantes tanto los `NA` como los textos vacíos o formados únicamente por espacios. Esta evaluación se realiza sobre **todos los registros originales**.
+
+```{r}
+#| label: completitud
+base_completitud <- datos_gbif %>%
+  mutate(across(where(is.character), ~ na_if(trimws(.x), "")))
+
+tabla_completitud <- base_completitud %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_faltantes") %>%
+  mutate(
+    n_completos = n_filas - n_faltantes,
+    pct_faltantes = round(100 * n_faltantes / n_filas, 2),
+    pct_completitud = round(100 * n_completos / n_filas, 2)
+  ) %>%
+  arrange(desc(pct_completitud), variable)
+
+resumen_completitud <- tabla_completitud %>%
+  summarise(
+    total_variables = n(),
+    vars_100_completas = sum(n_faltantes == 0),
+    vars_mayor_igual_80_pct = sum(pct_completitud >= 80),
+    vars_menor_50_pct = sum(pct_completitud < 50),
+    vars_totalmente_vacias = sum(n_completos == 0)
+  )
+print(resumen_completitud)
+print(head(tabla_completitud, 25), n = 25)
+```
+
+### Variables relevantes para biodiversidad
+
+```{r}
+#| label: variables-clave
+vars_clave_gbif <- c(
+  "gbifID", "scientificName", "species", "acceptedScientificName",
+  "taxonRank", "taxonomicStatus", "kingdom", "phylum", "class",
+  "order", "order_", "family", "genus", "decimalLatitude", "decimalLongitude",
+  "coordinateUncertaintyInMeters", "countryCode", "locality", "stateProvince",
+  "depth", "elevation", "eventDate", "year", "month", "day",
+  "basisOfRecord", "occurrenceStatus", "individualCount",
+  "institutionCode", "datasetName", "issue"
+)
+completitud_clave <- tabla_completitud %>% filter(variable %in% vars_clave_gbif)
+
+print(completitud_clave, n = Inf)
+ggplot(completitud_clave, aes(x = reorder(variable, pct_completitud), y = pct_completitud)) +
+  geom_col(fill = "#2b5c8f", width = 0.7) +
+  geom_hline(yintercept = 80, linetype = "dashed", color = "#d95f02") +
+  coord_flip() +
+  labs(
+    title = "Completitud de variables relevantes para biodiversidad",
+    subtitle = "Referencia visual: 80 % de datos presentes",
+    x = "Variable", y = "Completitud (%)"
+  ) +
+  theme_minimal()
+```
+
+## 4. Caracterización de la base original
+
+### Cobertura geográfica
+
+```{r}
+#| label: cobertura-original
+resumen_espacial_original <- datos_gbif %>%
+  summarise(
+    registros_totales = n(),
+    con_coordenadas = sum(!is.na(decimalLatitude) & !is.na(decimalLongitude)),
+    coordenadas_rango_valido = sum(
+      !is.na(decimalLatitude) & !is.na(decimalLongitude) &
+      between(decimalLatitude, -90, 90) & between(decimalLongitude, -180, 180)
+    ),
+    lat_min = min(decimalLatitude, na.rm = TRUE),
+    lat_max = max(decimalLatitude, na.rm = TRUE),
+    lon_min = min(decimalLongitude, na.rm = TRUE),
+    lon_max = max(decimalLongitude, na.rm = TRUE)
+  )
+print(resumen_espacial_original)
+```
+
+Que las coordenadas se encuentren dentro de rangos numéricos válidos no demuestra que todas correspondan a la región de estudio o que sean exactas; eso requiere controles geográficos adicionales.
+
+### Cobertura temporal original
+
+```{r}
+#| label: cobertura-temporal-original
+resumen_temporal_original <- datos_gbif %>%
+  summarise(
+    con_anio = sum(!is.na(year)),
+    sin_anio = sum(is.na(year)),
+    pct_con_anio = round(100 * con_anio / n(), 2),
+    anio_inicio = min(year, na.rm = TRUE),
+    anio_fin = max(year, na.rm = TRUE)
+  )
+print(resumen_temporal_original)
+```
+
+### Resumen taxonómico preliminar
+
+```{r}
+#| label: taxonomia-original
+datos_biodiv <- datos_gbif %>% select(any_of(vars_clave_gbif))
+resumen_taxonomico <- datos_biodiv %>%
+  summarise(
+    total_registros = n(),
+    registros_con_species = sum(!is.na(species) & trimws(species) != ""),
+    nombres_distintos_species = n_distinct(species[!is.na(species) & trimws(species) != ""]),
+    generos_distintos = n_distinct(genus[!is.na(genus) & trimws(genus) != ""]),
+    familias_distintas = n_distinct(family[!is.na(family) & trimws(family) != ""]),
+    filos_distintos = n_distinct(phylum[!is.na(phylum) & trimws(phylum) != ""])
+  )
+print(resumen_taxonomico)
+
+if ("basisOfRecord" %in% names(datos_biodiv)) {
+  tipos_registro <- datos_biodiv %>%
+    count(basisOfRecord, sort = TRUE) %>%
+    mutate(pct = round(100 * n / sum(n), 2))
+  print(tipos_registro, n = Inf)
+}
+```
+
+Estos conteos de nombres reflejan la taxonomía tal como figura en la descarga original; no sustituyen una validación nomenclatural ni el tratamiento de sinonimias. Los registros fósiles deben distinguirse de observaciones de organismos actuales cuando la interpretación científica lo requiera.
+
+## 5. Depuración y selección de 15.006 registros
+
+### Columnas completamente vacías
+
+```{r}
+#| label: columnas-vacias
+columnas_vacias <- tabla_completitud %>%
+  filter(n_completos == 0) %>%
+  pull(variable)
+cat("Columnas totalmente vacías:", length(columnas_vacias), "\n")
+
+datos_gbif_clean <- datos_gbif %>% select(-any_of(columnas_vacias))
+cat("Columnas conservadas:", ncol(datos_gbif_clean), "\n")
+```
+
+### Fechas y regla de inclusión
+
+```{r}
+#| label: filtro-fechas
+# Se conserva el procedimiento de selección utilizado en el segundo script.
+datos_gbif_final <- datos_gbif_clean %>%
+  select(OBJECTID, eventDate, year, month, day,
+         decimalLatitude, decimalLongitude, scientificName) %>%
+  rename(id = OBJECTID,
+         latitud = decimalLatitude,
+         longitud = decimalLongitude) %>%
+  mutate(
+    eventDate_new = lubridate::make_date(
+      year = as.integer(year),
+      month = as.integer(month),
+      day = as.integer(day)
+    )
+  )
+
+# Evaluación de la condición de exclusión, ANTES de filtrar.
+filas_sin_ambas_fechas <- datos_gbif_final %>%
+  filter(is.na(eventDate_new) & is.na(eventDate))
+
+resumen_filtro <- tibble(
+  categoria = c("Registros originales", "Sin ambas fechas", "Registros conservados"),
+  registros = c(nrow(datos_gbif_final),
+                nrow(filas_sin_ambas_fechas),
+                nrow(datos_gbif_final) - nrow(filas_sin_ambas_fechas))
+) %>% mutate(pct_original = round(100 * registros / n_filas, 2))
+print(resumen_filtro)
+
+# Filtro exactamente equivalente al del segundo script.
+datos_gbif_final <- datos_gbif_final %>%
+  filter(!(is.na(eventDate_new) & is.na(eventDate))) %>%
+  mutate(
+    fecha_analisis = coalesce(as.Date(eventDate_new), as.Date(eventDate))
+  )
+
+# Para detectar cambios inesperados en esta versión de la base.
+if (n_filas == 21593 && nrow(datos_gbif_final) != 15006) {
+  warning("El filtro no produjo 15.006 registros. Revisa la importación o las fechas.")
+}
+
+resumen_fechas <- datos_gbif_final %>%
+  summarise(
+    registros_conservados = n(),
+    fecha_reconstruida = sum(!is.na(eventDate_new)),
+    fecha_original = sum(!is.na(eventDate)),
+    fecha_final_disponible = sum(!is.na(fecha_analisis)),
+    fecha_final_faltante = sum(is.na(fecha_analisis))
+  )
+print(resumen_fechas)
+```
+
+La fecha `fecha_analisis` utiliza `eventDate_new` cuando se puede reconstruir con día, mes y año; de lo contrario, utiliza `eventDate` si está disponible. Esta regla evita dejar fechas vacías por haber descartado la columna original después del filtrado. No implica que todas las fechas originales tengan igual precisión.
+
+### Tabla preparada para análisis y exportación
+
+```{r}
+#| label: exportacion
+datos_gbif_analisis <- datos_gbif_final %>%
+  transmute(
+    id,
+    eventDate = fecha_analisis,
+    longitud,
+    latitud,
+    scientificName
+  )
+
+cat("Dimensiones de la base de análisis: ",
+    nrow(datos_gbif_analisis), " filas x ",
+    ncol(datos_gbif_analisis), " columnas\n", sep = "")
+print(head(datos_gbif_analisis, 15), n = 15)
+
+# Los archivos derivados se guardan aparte y NO sobrescriben el Excel original.
+dir.create("resultados_GBIF", showWarnings = FALSE, recursive = TRUE)
+write.csv(datos_gbif_analisis,
+          "resultados_GBIF/datos_gbif_analisis_integral.csv",
+          row.names = FALSE, na = "")
+write.csv(tabla_completitud,
+          "resultados_GBIF/tabla_completitud_integral.csv",
+          row.names = FALSE, na = "")
+```
+
+## 6. Distribución temporal del subconjunto
+
+### Registros por año y mes
+
+```{r}
+#| label: resumen-anual-mensual
+resumen_anual_mensual <- datos_gbif_final %>%
+  group_by(year, month) %>%
+  summarise(numero_registros = n(), .groups = "drop") %>%
+  arrange(year, month)
+
+print(resumen_anual_mensual, n = Inf)
+
+# El criterio del script original era > 10 (es decir, al menos 11 registros).
+meses_mas_10 <- resumen_anual_mensual %>%
+  filter(numero_registros > 10) %>%
+  arrange(year, month)
+cat("Combinaciones año-mes con más de 10 registros:", nrow(meses_mas_10), "\n")
+print(meses_mas_10, n = Inf)
+```
+
+Las filas con `month = NA` permanecen en este resumen porque pueden tener un año válido. Para los gráficos temporales se excluyen únicamente las fechas o componentes faltantes que impiden representar el eje correspondiente.
+
+### Distribución histórica en intervalos de cinco años
+
+```{r}
+ggplot(datos_gbif_final %>% filter(!is.na(year)), aes(x = year)) +
+  geom_histogram(
+    binwidth = 5,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  scale_x_continuous(
+    breaks = seq(1860, 2025, by = 10)
+  ) +
+  labs(
+    title = "Distribución histórica de registros GBIF",
+    subtitle = "Subconjunto de 15.006 registros: solo aquellos con año disponible",
+    x = "Año",
+    y = "Frecuencia de registros"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 9
+    )
+  )
+```
+### Años con mayor número de registros GBIF
+
+```{r}
+#| label: ranking-anual
+
+ranking_anual <- datos_gbif_final %>%
+  filter(!is.na(year)) %>%
+  count(year, name = "numero_registros") %>%
+  arrange(desc(numero_registros))
+
+# Mostrar todos los años ordenados
+print(ranking_anual, n = Inf)
+```
+### Diez años con mayor cantidad de ocurrencias
+
+```{r}
+#| label: top-10-anios
+
+ranking_anual %>%
+  slice_max(numero_registros, n = 10, with_ties = FALSE) %>%
+  ggplot(aes(
+    x = reorder(factor(year), numero_registros),
+    y = numero_registros
+  )) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = numero_registros),
+            hjust = -0.15, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Los 10 años con mayor número de registros GBIF",
+    x = "Año",
+    y = "Número de ocurrencias"
+  ) +
+  theme_minimal()
+```
+### Distribución mensual
+
+```{r}
+#| label: meses-grafico
+datos_gbif_final %>%
+  filter(!is.na(month), between(month, 1, 12)) %>%
+  count(month) %>%
+  ggplot(aes(x = factor(month, levels = 1:12, labels = month.abb), y = n)) +
+  geom_col(fill = "#7570b3") +
+  labs(title = "Distribución mensual de ocurrencias GBIF",
+       subtitle = "Solo registros del subconjunto con mes disponible",
+       x = "Mes", y = "Número de registros") +
+  theme_minimal()
+```
+
+## 7. Distribución geográfica del subconjunto
+
+### Comprobación de coordenadas
+
+```{r}
+#| label: datos-mapa
+datos_mapa <- datos_gbif_final %>%
+  filter(!is.na(longitud), !is.na(latitud),
+         between(longitud, -180, 180),
+         between(latitud, -90, 90))
+cat("Registros del subconjunto con coordenadas en rangos válidos:",
+    nrow(datos_mapa), "\n")
+```
+
+### Mapa de ocurrencias en la región Colón–Cocos
+
+```{r}
+#| label: mapa-gbif
+#| fig-width: 10
+#| fig-height: 7
+mundo <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+ggplot() +
+  geom_sf(data = mundo, fill = "gray90", color = "gray55", linewidth = 0.25) +
+  geom_point(data = datos_mapa,
+             aes(x = longitud, y = latitud),
+             color = "#D73027", alpha = 0.45, size = 1.2) +
+  coord_sf(xlim = c(-100, -88), ylim = c(-3, 9), expand = FALSE) +
+  labs(title = "Distribución geográfica de registros GBIF",
+       subtitle = "Región Colón–Cocos | Subconjunto con información temporal",
+       x = "Longitud (°)", y = "Latitud (°)",
+       caption = paste("Registros representados:", nrow(datos_mapa))) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        panel.grid.major = element_line(color = "gray85", linewidth = 0.3))
+```
+
+**Limitaciones de interpretación.** Los puntos indican ocurrencias registradas, no individuos distintos ni densidades biológicas. La superposición de puntos puede ocultar registros coincidentes. Debe revisarse por separado la precisión espacial, la pertenencia al ámbito marino Colón–Cocos, los tipos de registro (incluidos fósiles) y la calidad taxonómica antes de usar estas cifras como estimaciones ecológicas.
+
+## 8. Análisis del origen de los registros históricos
+
+Se analizan los registros correspondientes a los años 1970, 1979 y 1991, con el objetivo de identificar los conjuntos de datos, instituciones publicadoras y tipos de evidencia que explican su elevada representación en GBIF.
+
+```{r}
+#| label: origen-registros-historicos
+
+# Seleccionar los tres años de interés desde la base original
+datos_historicos <- datos_gbif %>%
+  filter(year %in% c(1970, 1979, 1991))
+
+# Total de registros por año
+resumen_historico <- datos_historicos %>%
+  count(year, name = "numero_registros") %>%
+  arrange(desc(numero_registros))
+
+print(resumen_historico, n = Inf)
+```
+
+### 8.1. Conjuntos de datos de procedencia
+
+```{r}
+#| label: datasets-historicos
+
+origen_datasets <- datos_historicos %>%
+  group_by(year, datasetName, datasetKey) %>%
+  summarise(
+    numero_registros = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(year, desc(numero_registros))
+
+print(origen_datasets, n = Inf)
+```
+
+### 8.2. Instituciones y publicadores
+
+```{r}
+#| label: instituciones-historicas
+
+origen_instituciones <- datos_historicos %>%
+  group_by(year, publisher, institutionCode) %>%
+  summarise(
+    numero_registros = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(year, desc(numero_registros))
+
+print(origen_instituciones, n = Inf)
+```
+
+### 8.3. Tipos de registros
+
+```{r}
+#| label: tipos-registros-historicos
+
+tipos_historicos <- datos_historicos %>%
+  count(year, basisOfRecord, name = "numero_registros") %>%
+  group_by(year) %>%
+  mutate(
+    porcentaje = round(
+      numero_registros / sum(numero_registros) * 100, 2
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(year, desc(numero_registros))
+
+print(tipos_historicos, n = Inf)
+```
+# 8.4 Identificación de los conjuntos de datos históricos
+
+### 8.4. Procedencia de los registros históricos
+
+Se presenta la distribución de las ocurrencias de 1970, 1979 y 1991 según la institución publicadora y el tipo de registro biológico.
+
+```{r}
+#| label: procedencia-historica
+#| fig-width: 10
+#| fig-height: 6
+
+# Agrupar registros por institución y tipo de evidencia
+fuentes_historicas <- datos_historicos %>%
+  mutate(
+    institucion = if_else(
+      is.na(publisher) | trimws(publisher) == "",
+      "Institución no especificada",
+      publisher
+    ),
+    tipo_registro = if_else(
+      is.na(basisOfRecord),
+      "Sin clasificación",
+      basisOfRecord
+    )
+  ) %>%
+  count(year, institucion, tipo_registro,
+        name = "numero_registros")
+
+# Crear un gráfico para cada año
+for (anio in c(1970, 1979, 1991)) {
+
+  datos_anio <- fuentes_historicas %>%
+    filter(year == anio) %>%
+    group_by(institucion, tipo_registro) %>%
+    summarise(
+      numero_registros = sum(numero_registros),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(numero_registros)) %>%
+    slice_head(n = 5) %>%
+    mutate(
+      etiqueta = paste0(
+        stringr::str_trunc(institucion, 42),
+        " | ",
+        tipo_registro
+      )
+    )
+
+  grafico <- ggplot(
+    datos_anio,
+    aes(
+      x = reorder(etiqueta, numero_registros),
+      y = numero_registros
+    )
+  ) +
+    geom_col(fill = "steelblue", width = 0.65) +
+    geom_text(
+      aes(label = numero_registros),
+      hjust = -0.15,
+      size = 4
+    ) +
+    coord_flip() +
+    scale_y_continuous(
+      expand = expansion(mult = c(0, 0.2))
+    ) +
+    labs(
+      title = paste("Procedencia de registros GBIF -", anio),
+      subtitle = "Principales instituciones y tipos de registro",
+      x = NULL,
+      y = "Número de ocurrencias"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.text.y = element_text(size = 9)
+    )
+
+  print(grafico)
+}
+```
+
+## 9. Conclusiones metodológicas preliminares
+
+- La base original se conserva para evaluar completitud, cobertura y composición taxonómica sin descartar información.
+- El subconjunto de **15.006 registros** reproduce el criterio de incluir ocurrencias con fecha original o reconstruida disponible.
+- Los **6.587 registros excluidos** carecían de ambas representaciones de fecha, pero pueden seguir siendo útiles en análisis que no requieren información temporal.
+- La ausencia de fecha y la heterogeneidad de los tipos de registro limitan las comparaciones directas entre períodos.
+- Los recuentos de nombres científicos requieren validación taxonómica adicional antes de interpretarse como riqueza de especies aceptadas.
