@@ -20,21 +20,21 @@
 
 💡💻 Hackatón OceanHackWeek en Español - OHWe 2026
 
+🔗 Puedes revisar el proyecto [aquí](https://github.com/Intercoonecta/ohwe26-proy1-GBIF_analisis_espacial/tree/main).
+
+📄 Puedes revisar el planteamiento del proyecto [aquí](https://docs.google.com/document/d/1KvCZGQ1qxm2da7MkqWJ4QA7VYR6cvyMaDUTevQnA6NM/edit?tab=t.0).
+
 ### 👥 Autores
 - 
 -
 - Elmer Quispe-Salazar (IMARPE, Perú)
-
-🔗 Puedes revisar el proyecto [aquí](https://github.com/Intercoonecta/ohwe26-proy1-GBIF_analisis_espacial/tree/main).
-
-📄 Puedes revisar el planteamiento del proyecto [aquí](https://docs.google.com/document/d/1KvCZGQ1qxm2da7MkqWJ4QA7VYR6cvyMaDUTevQnA6NM/edit?tab=t.0).
 
 ---
 
 ## 📝 Descripción del proyecto
 La biodiversidad marina responde a gradientes y fluctuaciones oceanográficas, pero la identificación de estos patrones a escala interanual resulta compleja cuando los registros biológicos proceden de fuentes con diferente cobertura espacial, temporal y esfuerzo de observación. Este proyecto tiene como propósito **caracterizar la variabilidad de la diversidad marina y evaluar su asociación con las condiciones oceanográficas durante 1993–2020**. Para ello, se integrarán registros de ocurrencia de **OBIS** y **GBIF**, sometidos a controles de calidad y estandarización taxonómica. En paralelo, se obtendrán series ambientales de **Copernicus Marine**, inicialmente **temperatura superficial del mar (TSM)** y **salinidad superficial del mar (SSM)**, con posibilidad de incorporar otras variables justificadas ecológicamente. La información se organizará en una **resolución anual**; se calcularán indicadores de **diversidad alfa y beta**, estadísticas ambientales por celda y promedios anuales para todo el dominio. Finalmente, se explorarán las relaciones **diversidad–ambiente**, evaluando la cobertura observacional, la estructura espacio-temporal y la sensibilidad de los resultados a los criterios de depuración.
 
-## 🔬 Hipótesis de trabajo
+## 🔬 Hipótesis
 
 | Hipótesis | Predicción evaluable |
 |---|---|
