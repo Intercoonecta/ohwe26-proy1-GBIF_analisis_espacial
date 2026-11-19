@@ -1,0 +1,675 @@
+---
+title: "Depuración de Datos de Biodiversidad (GBIF): Corredor Colón - Coco"
+subtitle: "Filtrado taxonómico, exclusión de fósiles, control geoespacial y eliminación de duplicados"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+## 1. Configuración y carga de la base de datos cruda
+
+Partimos de la base de datos cruda de GBIF utilizando `guess_max = 25000` para garantizar la correcta lectura de todas las columnas.
+
+```{r}
+#| label: setup
+# Cargar paquetes necesarios
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+```
+
+```{r}
+#| label: carga-datos
+#| warning: false
+# Cargar datos crudos
+ruta_archivo <- "data/GBIF_Colon_Coco_2026_TableToExcel original descargada de Gbif.xlsx"
+
+data_cruda <- read_excel(
+  path = ruta_archivo,
+  sheet = "occurrence_XYTableToPoint_Expor",
+  guess_max = 25000
+)
+
+cat("Registros en la base cruda:", nrow(data_cruda), "\n")
+cat("Variables en la base cruda:", ncol(data_cruda), "\n")
+```
+
+## 2. Aplicación de filtros obligatorios (Reinos y Fósiles)
+
+Aplicamos las reglas de exclusión taxonómica (`kingdom != "incertae sedis"` y `kingdom != "Fungi"`) y eliminamos los especímenes fósiles (`basisOfRecord != "FOSSIL_SPECIMEN"`).
+
+```{r}
+#| label: filtros-reino-fosiles
+# 1. Filtrar reinos 'incertae sedis' (867 reg.) y 'Fungi' (12 reg.)
+data_paso1_reinos <- data_cruda |>
+  filter(!is.na(kingdom), !kingdom %in% c("incertae sedis", "Fungi"))
+
+# 2. Filtrar registros fósiles ('FOSSIL_SPECIMEN')
+data_paso2_sin_fosiles <- data_paso1_reinos |>
+  filter(basisOfRecord != "FOSSIL_SPECIMEN")
+
+cat("Registros tras eliminar 'incertae sedis' y 'Fungi':", nrow(data_paso1_reinos), "\n")
+cat("Registros tras eliminar 'FOSSIL_SPECIMEN':", nrow(data_paso2_sin_fosiles), "\n")
+```
+
+## 3. Depuración extra recomendada (Calidad ecológica y geoespacial)
+
+Inspeccionando los 15,490 registros restantes, aplicamos cuatro filtros adicionales para garantizar que el data frame final represente únicamente biodiversidad marina real y georreferenciada con precisión:
+
+1.  **Solo presencias confirmadas:** `occurrenceStatus == "PRESENT"` (elimina 2 ausencias).
+2.  **Sin errores geoespaciales de GBIF:** `hasGeospatialIssues == FALSE` (elimina 746 registros continentales mal georreferenciados en el océano, principalmente aves y mamíferos terrestres de Canadá y EE. UU.).
+3.  **Exclusión de intrusos terrestres sin alerta automática:** Eliminamos `kingdom == "Plantae"` (plantas terrestres continentales infiltradas) y hormigas terrestres (`family == "Formicidae"`), conservando dentro de `Insecta` únicamente al género marino pelágico *Halobates* (`family == "Gerridae"`).
+
+```{r}
+#| label: depuracion-extra-recomendada
+data_paso3_calidad <- data_paso2_sin_fosiles |>
+  filter(
+    occurrenceStatus == "PRESENT",
+    hasGeospatialIssues == "false",
+    kingdom != "Plantae",
+    is.na(family) | family != "Formicidae"
+  )
+
+cat("Registros tras depuración ecológica y geoespacial extra:", nrow(data_paso3_calidad), "\n")
+```
+
+## 4. Eliminación de registros duplicados
+
+En esta base existen dos niveles de duplicación que debemos resolver en orden:
+
+1.  **Duplicados de catálogo por doble ingesta en GBIF (ej. PANGAEA):** Registros con el mismo `institutionCode`, `collectionCode`, `catalogNumber` y `acceptedScientificName` que fueron subidos dos veces (una vez con dato en `depth` y otra con dato en `organismQuantity`). Ordenamos priorizando las filas que contienen información de profundidad (`depth`) y abundancia antes de aplicar `distinct()`.
+2.  **Duplicados espacio-temporales y batimétricos:** Registros con el mismo taxón aceptado (`acceptedScientificName`), coordenadas (`decimalLatitude`, `decimalLongitude`), fecha (`year`, `month`, `day`) y profundidad (`depth`).
+
+```{r}
+#| label: eliminacion-duplicados
+# Paso 4A: Ordenar para priorizar registros con dato de profundidad (depth) y cantidad
+data_ordenada <- data_paso3_calidad |>
+  arrange(is.na(depth), is.na(organismQuantity), gbifID)
+
+# Eliminar duplicados técnicos de catálogo (conservando aquellos sin número de catálogo)
+data_sin_dup_catalogo <- data_ordenada |>
+  mutate(
+    clave_catalogo = if_else(
+      !is.na(catalogNumber),
+      paste(institutionCode, collectionCode, catalogNumber, acceptedScientificName, sep = "|"),
+      paste("SIN_CAT", gbifID, sep = "|")
+    )
+  ) |>
+  distinct(clave_catalogo, .keep_all = TRUE) |>
+  select(-clave_catalogo)
+
+# Paso 4B: Eliminar duplicados biológico-espacio-temporales (mismo taxón, coord, fecha y prof)
+data_sin_duplicados <- data_sin_dup_catalogo |>
+  distinct(
+    acceptedScientificName, decimalLatitude, decimalLongitude,
+    year, month, day, depth,
+    .keep_all = TRUE
+  )
+
+cat("Registros tras eliminar duplicados de catálogo:", nrow(data_sin_dup_catalogo), "\n")
+cat("Registros tras eliminar duplicados espacio-temporales:", nrow(data_sin_duplicados), "\n")
+```
+
+## 5. Selección de variables útiles y creación del Data Frame final
+
+Seleccionamos las columnas clave para el estudio de biodiversidad (incluyendo `order_` con el nombre asignado en el archivo Excel) y generamos dos productos listos para el análisis:
+
+- **`df_biodiversidad_depurado`:** Contiene todos los registros limpios y únicos (incluyendo identificaciones a nivel de género o familia).
+- **`df_especies_depurado`:** Subconjunto filtrado exclusivamente a registros identificados a nivel de especie (`!is.na(species)`), ideal para análisis de riqueza específica ($\alpha$, $\beta$, $\gamma$).
+
+```{r}
+#| label: dataframe-final
+vars_seleccionadas <- c(
+  # Identificadores y taxonomía validada
+  "gbifID", "scientificName", "acceptedScientificName", "species",
+  "kingdom", "phylum", "class", "order_", "superfamily", "family", 
+  "subfamily", "genus", "taxonRank", "taxonomicStatus", "speciesKey",
+  # Ubicación espacial y profundidad
+  "decimalLatitude", "decimalLongitude", "coordinateUncertaintyInMeters",
+  "depth", "locality", "countryCode",
+  # Cobertura temporal
+  "eventDate", "year", "month", "day",
+  # Metadatos del registro y conservación
+  "basisOfRecord", "occurrenceStatus", "individualCount", 
+  "organismQuantity", "organismQuantityType", "iucnRedListCategory",
+  "institutionCode", "collectionCode", "catalogNumber", "datasetKey"
+)
+
+# Producto 1: Data frame depurado general
+df_biodiversidad_depurado <- data_sin_duplicados |>
+  select(any_of(vars_seleccionadas)) |>
+  rename(order = order_)
+
+# Producto 2: Data frame depurado exclusivo a nivel de especie
+df_especies_depurado <- df_biodiversidad_depurado |>
+  filter(!is.na(species) & trimws(species) != "")
+
+# Tabla auditora del proceso completo de depuración
+auditoria_depuracion <- tibble(
+  Etapa = c(
+    "0. Base de datos cruda original",
+    "1. Sin reinos 'incertae sedis' ni 'Fungi'",
+    "2. Sin especímenes fósiles (FOSSIL_SPECIMEN)",
+    "3. Sin ausencias, alertas geoespaciales ni plantas/hormigas terrestres",
+    "4A. Sin duplicados técnicos de catálogo",
+    "4B. Sin duplicados espacio-temporales (df_biodiversidad_depurado)",
+    "5. Solo registros a nivel de especie (df_especies_depurado)"
+  ),
+  Registros = c(
+    nrow(data_cruda),
+    nrow(data_paso1_reinos),
+    nrow(data_paso2_sin_fosiles),
+    nrow(data_paso3_calidad),
+    nrow(data_sin_dup_catalogo),
+    nrow(df_biodiversidad_depurado),
+    nrow(df_especies_depurado)
+  ),
+  Especies_unicas = c(
+    n_distinct(data_cruda$species, na.rm = TRUE),
+    n_distinct(data_paso1_reinos$species, na.rm = TRUE),
+    n_distinct(data_paso2_sin_fosiles$species, na.rm = TRUE),
+    n_distinct(data_paso3_calidad$species, na.rm = TRUE),
+    n_distinct(data_sin_dup_catalogo$species, na.rm = TRUE),
+    n_distinct(df_biodiversidad_depurado$species, na.rm = TRUE),
+    n_distinct(df_especies_depurado$species, na.rm = TRUE)
+  )
+) |>
+  mutate(
+    Pct_retenido = round((Registros / nrow(data_cruda)) * 100, 2)
+  )
+
+print(auditoria_depuracion)
+```
+
+## 6. Resumen taxonómico y exportación del Data Frame depurado
+
+Visualizamos la composición por filo y clase del data frame depurado y guardamos el producto final en la carpeta `data/` en formatos `.rds` (conserva tipos de datos en R) y `.csv`.
+
+```{r}
+#| label: resumen-y-exportacion
+# Resumen por Reino, Filo y Clase en el data frame final
+df_biodiversidad_depurado |>
+  group_by(kingdom, phylum, class) |>
+  summarise(
+    n_registros = n(),
+    n_generos = n_distinct(genus, na.rm = TRUE),
+    n_especies = n_distinct(species, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(n_especies), desc(n_registros)) |>
+  print(n = 25)
+
+# Exportar los data frames depurados para los siguientes análisis
+saveRDS(df_biodiversidad_depurado, "data/GBIF_Colon_Coco_depurado.rds")
+write.csv(df_biodiversidad_depurado, "data/GBIF_Colon_Coco_depurado.csv", row.names = FALSE)
+
+saveRDS(df_especies_depurado, "data/GBIF_Colon_Coco_especies_depurado.rds")
+write.csv(df_especies_depurado, "data/GBIF_Colon_Coco_especies_depurado.csv", row.names = FALSE)
+```
+
+## 7. Variabilidad temporal (anual) por clase en `Animalia`
+
+Evaluamos la distribución y variabilidad interanual de registros y especies para cada categoría de `class` perteneciente al reino `Animalia` dentro del conjunto `df_biodiversidad_depurado`.
+
+```{r}
+#| label: variabilidad-temporal-animalia
+#| warning: false
+#| fig-width: 11
+#| fig-height: 8
+
+# 1. Filtrar Animalia, asegurar year numérico y etiquetar clases NA
+datos_animalia_anual <- df_biodiversidad_depurado |>
+  filter(kingdom == "Animalia") |>
+  mutate(
+    year = as.numeric(year),
+    class_clean = if_else(is.na(class) | trimws(class) == "", "Sin asignar (NA)", class)
+  )
+
+# Conteo anual de registros y especies únicas por clase (solo registros con año)
+serie_anual_class <- datos_animalia_anual |>
+  filter(!is.na(year)) |>
+  group_by(class_clean, year) |>
+  summarise(
+    n_registros = n(),
+    n_especies = n_distinct(species, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Tabla resumen de cobertura y variabilidad anual por clase
+resumen_variabilidad_animalia <- datos_animalia_anual |>
+  group_by(class_clean) |>
+  summarise(
+    reg_totales = n(),
+    reg_con_anio = sum(!is.na(year)),
+    reg_sin_anio = sum(is.na(year)),
+    especies_totales = n_distinct(species, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  left_join(
+    serie_anual_class |>
+      group_by(class_clean) |>
+      summarise(
+        anios_muestreados = n_distinct(year),
+        anio_min = min(year),
+        anio_max = max(year),
+        amplitud_anios = (anio_max - anio_min) + 1,
+        media_reg_anio = round(mean(n_registros), 2),
+        sd_reg_anio = round(sd(n_registros), 2),
+        cv_pct = round((sd(n_registros) / mean(n_registros)) * 100, 1),
+        max_reg_anio = max(n_registros),
+        anio_pico = year[which.max(n_registros)],
+        .groups = "drop"
+      ),
+    by = "class_clean"
+  ) |>
+  arrange(desc(anios_muestreados), desc(reg_totales))
+
+print(resumen_variabilidad_animalia, n = Inf)
+
+# Ordenar clases por número total de registros para los gráficos
+orden_clases <- resumen_variabilidad_animalia |>
+  arrange(desc(reg_totales)) |>
+  pull(class_clean)
+
+serie_anual_class <- serie_anual_class |>
+  mutate(class_clean = factor(class_clean, levels = orden_clases))
+
+# 3. Gráfico A: Mapa de calor (cobertura y brechas anuales por clase)
+p_heatmap <- ggplot(
+  serie_anual_class,
+  aes(x = year, y = factor(class_clean, levels = rev(orden_clases)), fill = n_registros)
+) +
+  geom_tile(color = "white", linewidth = 0.25) +
+  scale_fill_viridis_c(
+    option = "mako",
+    direction = -1,
+    trans = "log10",
+    name = "Registros\n(escala log10)"
+  ) +
+  scale_x_continuous(breaks = seq(1950, 2025, by = 10)) +
+  labs(
+    title = "Cobertura y variabilidad anual de registros por clase (Animalia)",
+    subtitle = "Cada celda representa un año con al menos un registro depurado (1952 - 2022)",
+    x = "Año",
+    y = "Clase (class)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 9)
+  )
+
+print(p_heatmap)
+
+# 4. Gráfico B: Variabilidad interanual detallada por clase (facetado con escala Y libre)
+p_facet <- ggplot(serie_anual_class, aes(x = year, y = n_registros)) +
+  geom_col(fill = "#2b5c8f", width = 1.2, alpha = 0.85) +
+  geom_point(color = "#d95f02", size = 1.3) +
+  facet_wrap(~ class_clean, scales = "free_y", ncol = 3) +
+  scale_x_continuous(breaks = seq(1950, 2020, by = 20)) +
+  labs(
+    title = "Variabilidad temporal anual por cada categoría de 'class' en Animalia",
+    subtitle = "Escala vertical independiente por clase para destacar pulsos y picos de muestreo",
+    x = "Año",
+    y = "Número de registros anuales"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    strip.background = element_rect(fill = "#eef3f8"),
+    strip.text = element_text(face = "bold", size = 8.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(p_facet)
+```
+## 8. Preparación del análisis de diversidad registrada
+
+Se analiza la riqueza observada y la composición de las listas de
+especies. Las filas de la base representan registros retenidos tras la
+depuración y no se interpretan como individuos ni muestras independientes.
+
+```{r}
+#| label: div-preparacion
+
+stopifnot(
+  exists("df_biodiversidad_depurado"),
+  exists("df_especies_depurado")
+)
+
+# Base general: incluye identificaciones superiores a especie
+div_general <- df_biodiversidad_depurado |>
+  mutate(
+    across(where(is.character), ~ na_if(trimws(.x), "")),
+    anio = as.integer(year),
+    clase = coalesce(class, "Clase no asignada"),
+    filo = coalesce(phylum, "Filo no asignado"),
+    grupo = paste(kingdom, filo, clase, sep = " / "),
+    especie = na_if(trimws(as.character(species)), "")
+  )
+
+# Base para riqueza específica
+div_especies <- div_general |>
+  filter(!is.na(especie))
+
+anios_objetivo <- c(1970L, 1979L, 1991L)
+
+div_tres_anios <- div_especies |>
+  filter(anio %in% anios_objetivo)
+
+dir.create(
+  "resultados_GBIF/diversidad",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+# Comprobar cuántos registros permanecen tras la depuración
+div_general |>
+  filter(anio %in% anios_objetivo) |>
+  group_by(anio) |>
+  summarise(
+    registros = n(),
+    registros_con_especie = sum(!is.na(especie)),
+    especies = n_distinct(especie, na.rm = TRUE),
+    fuentes = n_distinct(datasetKey, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  knitr::kable()
+```
+
+## 9. Riqueza observada y resolución taxonómica
+
+La riqueza corresponde al número de nombres distintos en el campo
+`species`. Se utiliza la clasificación presente en GBIF; este análisis
+no realiza una validación adicional de sinonimias.
+
+```{r}
+#| label: div-resumen-grupos
+
+div_resumen_grupos <- div_general |>
+  group_by(kingdom, filo, clase, grupo) |>
+  summarise(
+    registros = n(),
+    registros_con_especie = sum(!is.na(especie)),
+    especies = n_distinct(especie, na.rm = TRUE),
+    generos = n_distinct(genus, na.rm = TRUE),
+    fuentes = n_distinct(datasetKey, na.rm = TRUE),
+    anios_con_datos = n_distinct(anio, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    porcentaje_identificado_especie =
+      round(100 * registros_con_especie / registros, 1)
+  ) |>
+  arrange(desc(especies), desc(registros))
+
+knitr::kable(div_resumen_grupos)
+
+# Selección descriptiva de las ocho clases con mayor riqueza global
+grupos_principales <- div_resumen_grupos |>
+  filter(especies > 0, clase != "Clase no asignada") |>
+  slice_head(n = 8) |>
+  pull(grupo)
+
+div_resumen_grupos |>
+  filter(grupo %in% grupos_principales) |>
+  ggplot(aes(reorder(grupo, especies), especies)) +
+  geom_col(fill = "#2b5c8f") +
+  coord_flip() +
+  labs(
+    title = "Clases con mayor riqueza observada",
+    subtitle = "Selección basada en todos los años de la base depurada",
+    x = NULL,
+    y = "Especies registradas"
+  ) +
+  theme_minimal()
+
+write.csv(
+  div_resumen_grupos,
+  "resultados_GBIF/diversidad/resumen_grupos.csv",
+  row.names = FALSE
+)
+```## 10. Riqueza y cobertura en 1970, 1979 y 1991
+
+Se comparan riqueza observada, registros y fuentes. Las diferencias
+pueden reflejar cambios de cobertura, métodos o grupos objetivo.
+
+```{r}
+#| label: div-grupo-anio
+
+div_grupo_anio_observado <- div_general |>
+  filter(
+    anio %in% anios_objetivo,
+    grupo %in% grupos_principales
+  ) |>
+  group_by(grupo, anio) |>
+  summarise(
+    registros = n(),
+    registros_con_especie = sum(!is.na(especie)),
+    especies = n_distinct(especie, na.rm = TRUE),
+    fuentes = n_distinct(datasetKey, na.rm = TRUE),
+    coordenadas = n_distinct(
+      paste(decimalLatitude, decimalLongitude),
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) |>
+  mutate(
+    # Sin identificaciones específicas: riqueza no estimable
+    especies = if_else(
+      registros_con_especie > 0,
+      especies,
+      NA_integer_
+    )
+  )
+
+div_grupo_anio <- tidyr::expand_grid(
+  grupo = grupos_principales,
+  anio = anios_objetivo
+) |>
+  left_join(
+    div_grupo_anio_observado,
+    by = c("grupo", "anio")
+  )
+
+knitr::kable(
+  div_grupo_anio,
+  caption = "NA indica información no disponible o riqueza no estimable"
+)
+
+ggplot(
+  div_grupo_anio,
+  aes(factor(anio), grupo, fill = especies)
+) +
+  geom_tile(color = "white") +
+  geom_text(
+    aes(label = ifelse(is.na(especies), "ND", especies)),
+    size = 3
+  ) +
+  scale_fill_viridis_c(na.value = "grey85") +
+  labs(
+    title = "Riqueza observada por clase y año",
+    subtitle = "ND: sin datos suficientes para contar especies",
+    x = "Año",
+    y = NULL,
+    fill = "Especies"
+  ) +
+  theme_minimal()
+
+write.csv(
+  div_grupo_anio,
+  "resultados_GBIF/diversidad/grupos_por_anio.csv",
+  row.names = FALSE
+)
+```
+
+# Para visualizar la relación entre riqueza y cantidad de información:
+
+```{r}
+#| label: div-riqueza-cobertura
+
+div_grupo_anio |>
+  filter(!is.na(especies), registros_con_especie > 0) |>
+  ggplot(
+    aes(
+      registros_con_especie,
+      especies,
+      color = factor(anio),
+      size = fuentes
+    )
+  ) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~ grupo, scales = "free") +
+  labs(
+    title = "Riqueza observada y cobertura de registros",
+    x = "Registros identificados a especie",
+    y = "Especies registradas",
+    color = "Año",
+    size = "Fuentes"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 7))
+```
+
+## 11. Similitud de las listas de especies entre años
+
+La similitud se calcula dentro de cada grupo taxonómico. Una especie
+no registrada en un año no se interpreta como ausencia confirmada,
+desaparición o colonización.
+
+```{r}
+#| label: div-jaccard
+
+pares_div <- combn(
+  anios_objetivo,
+  2,
+  simplify = FALSE
+)
+
+div_jaccard <- bind_rows(lapply(grupos_principales, function(g) {
+
+  bind_rows(lapply(pares_div, function(par) {
+
+    especies_a <- div_tres_anios |>
+      filter(grupo == g, anio == par[1]) |>
+      pull(especie) |>
+      unique()
+
+    especies_b <- div_tres_anios |>
+      filter(grupo == g, anio == par[2]) |>
+      pull(especie) |>
+      unique()
+
+    comparacion_valida <-
+      length(especies_a) > 0 && length(especies_b) > 0
+
+    compartidas <- length(intersect(especies_a, especies_b))
+    union_listas <- length(union(especies_a, especies_b))
+
+    tibble(
+      grupo = g,
+      anio_1 = par[1],
+      anio_2 = par[2],
+      especies_1 = length(especies_a),
+      especies_2 = length(especies_b),
+      compartidas = ifelse(comparacion_valida, compartidas, NA),
+      solo_lista_1 = ifelse(
+        comparacion_valida,
+        length(setdiff(especies_a, especies_b)),
+        NA
+      ),
+      solo_lista_2 = ifelse(
+        comparacion_valida,
+        length(setdiff(especies_b, especies_a)),
+        NA
+      ),
+      similitud_jaccard = ifelse(
+        comparacion_valida,
+        compartidas / max(union_listas, 1),
+        NA_real_
+      )
+    )
+  }))
+}))
+
+knitr::kable(div_jaccard, digits = 3)
+
+div_jaccard |>
+  mutate(
+    comparacion = paste(anio_1, anio_2, sep = "–")
+  ) |>
+  ggplot(aes(comparacion, grupo, fill = similitud_jaccard)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(
+    limits = c(0, 1),
+    na.value = "grey85"
+  ) +
+  labs(
+    title = "Similitud de las listas de especies",
+    subtitle = "Gris: comparación no calculable por falta de especies registradas",
+    x = "Comparación de años",
+    y = NULL,
+    fill = "Jaccard"
+  ) +
+  theme_minimal()
+
+write.csv(
+  div_jaccard,
+  "resultados_GBIF/diversidad/jaccard_entre_anios.csv",
+  row.names = FALSE
+)
+```
+
+## 12. Frecuencia de documentación entre los tres años
+
+```{r}
+#| label: div-inventario-temporal
+
+div_inventario <- div_tres_anios |>
+  group_by(grupo, especie) |>
+  summarise(
+    numero_anios = n_distinct(anio),
+    anios = paste(sort(unique(anio)), collapse = ", "),
+    registros = n(),
+    fuentes = n_distinct(datasetKey, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+div_inventario |>
+  filter(grupo %in% grupos_principales) |>
+  count(grupo, numero_anios, name = "especies") |>
+  ggplot(
+    aes(
+      factor(numero_anios, levels = 1:3),
+      especies
+    )
+  ) +
+  geom_col(fill = "#279e8c") +
+  facet_wrap(~ grupo, scales = "free_y") +
+  labs(
+    title = "Especies documentadas en uno, dos o tres años",
+    x = "Número de años con registros",
+    y = "Especies"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 7))
+
+write.csv(
+  div_inventario,
+  "resultados_GBIF/diversidad/inventario_temporal.csv",
+  row.names = FALSE
+)
+```
+
+Las especies documentadas en un único año son exclusivas de esa lista
+temporal en la base analizada; no se consideran endémicas ni ausentes
+de la región en los otros años.
+
+
