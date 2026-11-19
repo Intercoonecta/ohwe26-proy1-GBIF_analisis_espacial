@@ -29,6 +29,7 @@
 - Tomás I. Marina (CADIC-CONICET, Argentina)
 - Elmer Quispe-Salazar (IMARPE, Perú)
 - Eduardo Martínez Angeles (IMIPAS, México)
+- Marina Bezerra Figueiredo (UEMA, Brasil)
 
 ---
 
