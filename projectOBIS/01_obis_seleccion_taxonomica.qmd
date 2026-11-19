@@ -1,0 +1,602 @@
+---
+title: "OBIS | Caracterización espacio-temporal y taxonómica de registros de biodiversidad marina"
+subtitle: "Proyecto-1 en OHWe 2026"
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: true
+  message: true
+  execute-dir: project
+params:
+  lon_min: -98
+  lon_max: -90
+  lat_min: -0.5
+  lat_max: 6.5
+  year_start: 1990
+  year_end: 2025
+  execute_download: true
+  grid_res: 0.25
+  run_rarefaction: true
+  max_rarefaction_groups: 4
+  n_saturation_groups_per_rank: 3
+  min_records_cell_rarefaction: 20
+  max_saturation_cell_units: 10000
+  saturation_curve_points: 35
+---
+
+## 1. ¿Qué hace este QMD?
+
+Este documento descarga registros de ocurrencia de **OBIS** mediante **`robis`**, para un dominio geográfico y periodo definido. Los datos se almacenan por año en `raw/` y posteriormente se integran.
+
+La base integrada se somete a procesos de **depuración, validación y estandarización taxonómica, espacial y temporal**, excluyendo registros no pertinentes, como fósiles, ausencias y duplicados. El resultado se almacena en una base estandarizada en `cin/`.
+
+Se realiza un **análisis exploratorio de datos (EDA)** para evaluar la distribución de registros por **año, mes y grupo taxonómico**, así como su cobertura y continuidad espacio-temporal. Esto permite identificar grupos biológicos con información adecuada para posteriores análisis de **diversidad** y su relación con **variables oceanográficas**.
+
+## 2. Configuración y funciones
+
+```{r}
+#| label: setup
+
+required <- c(
+  "robis",
+  "dplyr",
+  "readr",
+  "ggplot2",
+  "tibble",
+  "cowplot"
+)
+
+missing <- required[
+  !vapply(required, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing) > 0L) {
+  stop(
+    "Instala los paquetes faltantes: install.packages(c(",
+    paste(shQuote(missing), collapse = ", "),
+    "))"
+  )
+}
+
+root <- if (file.exists("main.R")) {
+  "."
+} else if (file.exists(file.path("R", "main.R"))) {
+  "."
+} else {
+  stop("No se encontró main.R en el directorio actual")
+}
+
+root <- normalizePath(root, winslash = "/")
+
+main_file <- if (file.exists(file.path(root, "main.R"))) {
+  file.path(root, "main.R")
+} else {
+  file.path(root, "R", "main.R")
+}
+
+source(main_file, local = TRUE)
+
+required_functions <- c(
+  "obis_cell_accumulation_screening",
+  "obis_clean_standardize",
+  "obis_download_period",
+  "obis_eda_tables",
+  "obis_event_coverage_by_year",
+  "obis_integrate_raw",
+  "obis_paths",
+  "obis_plot_cell_accumulation",
+  "obis_plot_map_taxa",
+  "obis_plot_map_years",
+  "obis_plot_record_thinning",
+  "obis_plot_saturation_domain",
+  "obis_plot_saturation_map",
+  "obis_plot_saturation_thresholds",
+  "obis_plot_spatial_facets",
+  "obis_rarefaction_screening",
+  "obis_record_thinning_screening",
+  "obis_records_saturation_screening",
+  "obis_selected_years",
+  "obis_spatial_screening",
+  "obis_taxon_suitability",
+  "obis_taxonomic_screening",
+  "obis_validate_config",
+  "obis_wkt",
+  "obis_write_csv"
+)
+
+obis_assert_functions(
+  required_functions,
+  env = environment()
+)
+
+#configuración 
+ggplot2::theme_set(
+  cowplot::theme_cowplot(font_size = 11)
+)
+
+p <- params
+
+obis_validate_config(p)
+
+years <- seq.int(
+  as.integer(p$year_start),
+  as.integer(p$year_end)
+)
+
+paths <- obis_paths(root)
+wkt <- obis_wkt(p)
+lon_range <- p$lon_max - p$lon_min
+lat_range <- p$lat_max - p$lat_min
+
+grid_res <- if (!is.null(p$grid_res)) {
+  as.numeric(p$grid_res)
+} else {
+  NA_real_
+}
+
+has_grid <- length(grid_res) == 1L &&
+  is.finite(grid_res) &&
+  grid_res > 0
+
+if (has_grid) {
+  n_lon <- ceiling(lon_range / grid_res)
+  n_lat <- ceiling(lat_range / grid_res)
+  n_cells <- n_lon * n_lat
+} else {
+  n_lon <- NA_integer_
+  n_lat <- NA_integer_
+  n_cells <- NA_integer_
+}
+
+line <- paste(rep("=", 72), collapse = "")
+separator <- paste(rep("-", 72), collapse = "")
+
+cat(
+  "\n", line, "\n",
+  " OBIS | CONFIGURACIÓN DEL PROYECTO\n",
+  line, "\n\n",
+
+  " 01. PROYECTO\n",
+  separator, "\n",
+  " Directorio raíz      : ", root, "\n",
+  " Archivo de funciones : ", main_file, "\n",
+  " Funciones verificadas: ", length(required_functions), "\n",
+  " Tema gráfico         : cowplot::theme_cowplot()\n\n",
+
+  " 02. DOMINIO GEOGRÁFICO\n",
+  separator, "\n",
+  " Longitud             : ", p$lon_min, " a ", p$lon_max, "°\n",
+  " Latitud              : ", p$lat_min, " a ", p$lat_max, "°\n",
+  " Extensión longitudinal: ", lon_range, "°\n",
+  " Extensión latitudinal : ", lat_range, "°\n",
+  " Geometría de consulta: POLYGON (WKT)\n\n",
+
+  " 03. RESOLUCIÓN ESPACIAL\n",
+  separator, "\n",
+  " Resolución de grilla : ",
+  if (has_grid) paste0(grid_res, "° x ", grid_res, "°") else "No definida",
+  "\n",
+  " Columnas             : ", if (has_grid) n_lon else "NA", "\n",
+  " Filas                : ", if (has_grid) n_lat else "NA", "\n",
+  " Celdas geométricas   : ",
+  if (has_grid) format(n_cells, big.mark = ",", scientific = FALSE) else "NA",
+  "\n\n",
+
+  " 04. COBERTURA TEMPORAL\n",
+  separator, "\n",
+  " Año inicial          : ", min(years), "\n",
+  " Año final            : ", max(years), "\n",
+  " Años evaluados       : ", length(years), "\n\n",
+
+  " 05. DESCARGA Y ANÁLISIS\n",
+  separator, "\n",
+  " Descarga OBIS        : ",
+  if (isTRUE(p$execute_download)) "ACTIVADA" else "DESACTIVADA",
+  "\n",
+  " Rarefacción eventos  : ",
+  if (isTRUE(p$run_rarefaction)) "ACTIVADA" else "DESACTIVADA",
+  "\n",
+  " Saturación eventos : ",
+  if (!is.null(p$n_saturation_groups_per_rank)) "CONFIGURADA" else "No configurada",
+  "\n\n",
+
+  " 06. DIRECTORIOS DE SALIDA\n",
+  separator, "\n",
+  " Datos originales     : ", paths$raw, "\n",
+  " Datos estandarizados : ", paths$cin, "\n",
+  " Tablas               : ", paths$tab, "\n",
+  " Figuras              : ", paths$fig, "\n\n",
+
+  line, "\n",
+  sep = ""
+)
+
+```
+
+## 3. Descarga e integración anual de ocurrencias 
+
+Se realiza **una consulta por año**, conservando todos los campos en OBIS en CSV, y se integran los archivos anuales mediante `dplyr::bind_rows()`.
+
+
+```{r}
+#| label: download
+manifest <- obis_download_period(years,wkt,paths$raw,p$execute_download)
+obis_write_csv(manifest,file.path(paths$tab,"00_write_descargas.csv"))
+print(manifest)
+```
+```{r}
+#| label: integrate
+raw_all <- obis_integrate_raw(manifest,years,paths$raw)
+
+if (is.null(raw_all)) {
+  warning("Faltan años o existen CSV inválidos: consulta cout/obis/tab/manifest_descargas.csv")
+} else {
+  cat("Ocurrencias:",nrow(raw_all),"\nColumnas:",ncol(raw_all),"\n")
+}
+```
+
+## 4. Depuración y estandarización
+
+Se conservan registros georreferenciados, identificados a nivel de especie y de afinidad marina confirmada. Se excluyen fósiles, ausencias, duplicados, registros descartados por OBIS y alertas explícitas de tierra. Se revisa cada exclusión. 
+
+```{r}
+#| label: clean
+processed <- obis_clean_standardize(raw_all,p)
+
+clean <- if(is.null(processed)) NULL else processed$clean
+
+if (!is.null(processed)) {
+  obis_write_csv(processed$audit,file.path(paths$tab,"01_rev_depuracion.csv"))
+  obis_write_csv(dplyr::count(processed$quality,source_year,reason,name="n"),
+                 file.path(paths$tab,"01_rev_por_anio.csv"))
+  obis_write_csv(processed$missing_fields,file.path(paths$tab,"01_rev_campos.csv"))
+  print(processed$audit)
+  cat("Registros retenidos:",nrow(clean),"\n")
+}
+```
+
+## 5. Evaluación de grupos taxonómicos
+
+La selección exploratoria considera el número de especies, años representados, continuidad temporal y diversidad de conjuntos de datos, por **filo, clase, orden**. 
+
+```{r}
+#| label: screening
+#| 
+screening <- obis_taxonomic_screening(clean,years)
+
+if(!is.null(screening)) {
+  obis_write_csv(screening$representativity,
+                 file.path(paths$tab,"02_candidatos_taxonomicos.csv"))
+  obis_write_csv(screening$yearly_taxa,
+                 file.path(paths$tab,"02_registros_por_anio_y_taxon.csv"))
+  
+  print(utils::head(dplyr::arrange(screening$representativity,
+                                   dplyr::desc(species),
+             dplyr::desc(years_present),dplyr::desc(records)),25),n=10)
+}
+```
+
+## 6. EDA de registros
+
+Las figuras muestran **cobertura temporal**. Las tablas de conteos incluyen todos los grupos; para visualizar la composición se presentan los doce taxones con más registros en cada rango.
+
+```{r}
+#| label: eda
+#| warning: false
+
+eda <- obis_eda_tables(clean)
+
+if (!is.null(eda)) {
+  
+  obis_write_csv(eda$year_month,
+                 file.path(paths$tab,"03_registros_por_anio_mes.csv"))
+  
+  g1 <- ggplot2::ggplot(eda$yearly,ggplot2::aes(year_analysis,records)) +
+    ggplot2::geom_col(fill = "#000000") +
+    ggplot2::labs(
+      title = "OBIS: ocurrencias por año",x = NULL,y = "Número de registros") +
+    ggplot2::scale_x_continuous(breaks = seq(min(years), max(years), by = 5), expand = c(0.01, 0.01)) + 
+    ggplot2::scale_y_continuous(expand = c(0, 0), limits = c(0, 5000)) + 
+    ggplot2::theme_bw(base_size = 12)
+  
+  print(g1)
+  
+  ggplot2::ggsave(file.path(paths$fig,"03_registros_por_anio.png"),g1,
+                  width = 11*0.7, height = 5*0.7, dpi = 350, bg = "white")
+
+  g3 <- ggplot2::ggplot(eda$year_month,
+                        ggplot2::aes(year_analysis,month_analysis,fill=records)) +
+    ggplot2::geom_tile(colour = "#000000", linewidth = 0.7) +
+    ggplot2::scale_fill_viridis_c(option = "plasma", direction = -1) +
+    ggplot2::scale_y_continuous( breaks = 1:12) +
+    ggplot2::labs(title = "OBIS: ocurrencias por año y mes", x = NULL, y = NULL, fill = "Registros") +
+   ggplot2::theme_bw(base_size = 12) + 
+    ggplot2::theme(panel.grid = ggplot2::element_blank())
+  
+  
+  print(g3)
+  
+  ggplot2::ggsave(file.path(paths$fig,"03_anio_mes.png"), g3,
+                 width = 11*0.8, height = 5*0.7, dpi = 350, bg = "white")
+  
+
+  if (!is.null(screening)) {
+
+  for (nivel in c("phylum", "class", "order")) {
+
+    tax <- screening$yearly_taxa |>
+      dplyr::filter(.data$rank == .env$nivel)
+
+    leaders <- tax |>
+      dplyr::group_by(taxon) |>
+      dplyr::summarise(
+        total = sum(records, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      dplyr::arrange(dplyr::desc(total)) |>
+      dplyr::slice_head(n = 9)
+
+   plot_data <- tax |>
+  dplyr::filter(.data$taxon %in% leaders$taxon) |>
+  tidyr::complete(
+    taxon = leaders$taxon,
+    year_analysis = seq.int(p$year_start, p$year_end),
+    fill = list(records = NA_integer_)
+  ) |>
+  dplyr::mutate(
+    taxon = factor(.data$taxon, levels = leaders$taxon)
+  ) |>
+  dplyr::arrange(.data$taxon, .data$year_analysis)
+
+    if (nrow(plot_data) == 0) next
+
+    plot <- ggplot2::ggplot(
+      plot_data,
+      ggplot2::aes(
+        x = year_analysis,
+        y = records,
+        color = taxon,
+        group = taxon
+      )
+    ) +
+      ggplot2::geom_line(linewidth = 0.3) +
+      ggplot2::geom_point(size = 1.5) +
+      ggplot2::facet_wrap(~ taxon, scales = "free_y", ncol = 3) +
+      ggplot2::labs(
+        title = paste("OBIS: registros por", nivel),
+        x = NULL,
+        y = "Ocurrencias"
+      ) +
+      ggplot2::theme_bw(base_size = 12) +
+      ggplot2::theme(
+        strip.text = ggplot2::element_text(face = "bold"),
+        plot.title = ggplot2::element_text(face = "bold")
+      )
+
+    print(plot)
+
+    ggplot2::ggsave(
+      filename = file.path(paths$fig, paste0("04_taxones_", nivel, "_facet.png")),
+      plot = plot,
+      width = 8,
+      height = 5,
+      dpi = 350, 
+      bg = "white"
+    )
+  }
+  }
+}
+```
+
+## 7. Representatividad espacial por grupo taxonómico
+
+Se evalúa **qué tan distribuidos espacialmente están los registros** antes de seleccionar un grupo para estudiar diversidad con la cuadrícula de `grid_res` grados. Se resumen registros, celdas con observaciones y concentración espacial **por año y por filo, clase u orden**. Las celdas sin registros no se interpretan como ausencias.
+
+```{r}
+#| label: spatial-screening
+spatial <- NULL
+if (!is.null(clean) && nrow(clean)) {
+  
+  spatial <- obis_spatial_screening(
+    clean = clean,
+    p = p,
+    grid_res = p$grid_res,
+    ranks = c("phylum", "class", "order")
+  )
+
+  obis_write_csv(spatial$cell_counts,
+                 file.path(paths$tab, "05_celdas_por_taxon_anio.csv"))
+  obis_write_csv(spatial$annual,
+                 file.path(paths$tab, "05_cobertura_espacial_taxon_anio.csv"))
+  obis_write_csv(spatial$summary,
+                 file.path(paths$tab, "05_cobertura_espacial_taxon_resumen.csv"))
+
+  print(utils::head(spatial$summary, 20), n = 20)
+}
+```
+
+### Distribución espacial anual por grupo
+
+Las facetas conservan el orden de **mayor a menor número total de registros**. La primera figura muestra cuántas celdas cuentan con registros; la segunda, la proporción de registros concentrados en la celda dominante; la tercera, el promedio de registros por celda ocupada. 
+
+```{r}
+#| label: spatial-facets
+#| fig-width: 12
+#| fig-height: 8
+if (!is.null(spatial) && nrow(spatial$annual)) {
+  for (nivel in c("class")) {
+    for (metric in c("n_cells", "max_cell_share", "mean_records_per_cell")) {
+      plot <- obis_plot_spatial_facets(
+        annual = spatial$annual,
+        rank_value = nivel,
+        metric = metric,
+        n_top = 9
+      )
+      if (is.null(plot)) next
+      print(plot)
+      
+      ggplot2::ggsave(
+        filename = file.path(paths$fig, paste0("05_espacial_", nivel, "_", metric, ".png")),
+        width = 8,
+      height = 5,
+      dpi = 350, 
+      bg = "white"
+    )
+    }
+  }
+}
+```
+
+| Clase | Cobertura espacial | Concentración | Intensidad de eventos | Evaluación  |
+|---|---|---|---|---|
+| **Teleostei** | Relativamente alta | Moderada | Alta, variable | Candidato favorable |
+| Malacostraca | Moderada | Moderada-alta en algunos años | Muy variable | Revisar distribución por dataset |
+| Holothuroidea | Moderada en años recientes | Alta en algunos años | Picos marcados | Posible sesgo de muestreo |
+| Elasmobranchii | Aumenta con el tiempo | Disminuye en años recientes | Relativamente baja | Candidato para revisar, especialmente en años recientes |
+| Globothalamea | Muy baja | Extremadamente alta | Un valor inicial excepcional | Poco apropiado para análisis espacio-temporal con esta información |
+
+
+## 8. Diagnóstico para seleccionar grupos candidatos
+
+Se combinan indicadores temporales y espaciales para **comparar clases**. La evaluación incluye número de especies identificadas, años con registros, racha de continuidad, celdas observadas por año, dominancia de la celda principal y procedencia de los registros. 
+
+```{r}
+#| label: integrated-screening
+suitability <- NULL
+if (!is.null(spatial) && !is.null(screening)) {
+  suitability <- obis_taxon_suitability(
+    representativity = screening$representativity,
+    spatial_summary = spatial$summary
+  )
+  obis_write_csv(suitability,
+                 file.path(paths$tab, "06_idoneidad_taxonomica_espaciotemporal.csv"))
+  print(utils::head(suitability, 30), n = 10)
+}
+```
+```{r}
+#| label: select-teleostei
+
+if (is.null(clean) || nrow(clean) == 0L) {
+  stop("No existen registros depurados para seleccionar Teleostei.")
+}
+
+teleostei <- clean |>
+  dplyr::filter(
+    !is.na(.data$class),
+    trimws(.data$class) == "Teleostei",
+    !is.na(.data$species_accepted),
+    trimws(.data$species_accepted) != ""
+  ) |>
+  dplyr::arrange(
+    .data$year_analysis,
+    .data$month_analysis,
+    .data$species_accepted
+  )
+
+stopifnot(
+  nrow(teleostei) > 0L,
+  all(teleostei$class == "Teleostei"),
+  all(teleostei$year_analysis %in% years)
+)
+
+file_teleostei <- file.path(
+  paths$cin,
+  sprintf(
+    "obis_teleostei_%d_%d.csv",
+    min(years),
+    max(years)
+  )
+)
+
+obis_write_csv(
+  teleostei,
+  file_teleostei
+)
+
+summary_teleostei <- tibble::tibble(
+  taxon = "Teleostei",
+  records = nrow(teleostei),
+  species = dplyr::n_distinct(teleostei$species_accepted),
+  years = dplyr::n_distinct(teleostei$year_analysis),
+  first_year = min(teleostei$year_analysis),
+  last_year = max(teleostei$year_analysis),
+  columns = ncol(teleostei)
+)
+
+print(summary_teleostei)
+
+
+teleostei_annual <- teleostei |>
+  dplyr::group_by(.data$year_analysis) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    species = dplyr::n_distinct(.data$species_accepted),
+    .groups = "drop"
+  ) |>
+  tidyr::complete(
+    year_analysis = years,
+    fill = list(
+      records = NA_integer_,
+      species = NA_integer_
+    )
+  ) |>
+  dplyr::arrange(.data$year_analysis)
+
+obis_write_csv(
+  teleostei_annual,
+  file.path(paths$tab, "09_teleostei_resumen_anual.csv")
+)
+
+print(teleostei_annual)
+
+cat(
+  "\n",
+  "============================================================\n",
+  " OBIS | BASE TAXONÓMICA SELECCIONADA\n",
+  "============================================================\n",
+  " Clase               : Teleostei\n",
+  " Registros           : ", nrow(teleostei), "\n",
+  " Especies            : ",
+  dplyr::n_distinct(teleostei$species_accepted), "\n",
+  " Años documentados   : ",
+  dplyr::n_distinct(teleostei$year_analysis), "\n",
+  " Periodo             : ",
+  min(years), "–", max(years), "\n",
+  " Resolución espacial : ", p$grid_res, "° (análisis posterior)\n",
+  " Variables           : ", ncol(teleostei), "\n",
+  " Archivo             : ", file_teleostei, "\n",
+  "============================================================\n",
+  sep = ""
+)
+```
+
+### Referencias 
+
+- Ocean Biodiversity Information System (OBIS). (s. f.). *Data access*. En *The OBIS manual*. https://manual.obis.org/access
+
+- Ocean Biodiversity Information System (OBIS). (s. f.). *Data quality flags*. En *The OBIS manual*. https://manual.obis.org/dataquality.html
+
+- Ocean Biodiversity Information System (OBIS). (s. f.). *Constructing and using identifiers*. En *The OBIS manual*. https://manual.obis.org/identifiers.html
+
+- Ocean Biodiversity Information System (OBIS). (s. f.). *Occurrence: Get occurrence records*. En *robis reference*. https://iobis.github.io/robis/reference/occurrence.html
+
+- Bonnet-Lebrun, A.-S., Sweetlove, M., Griffiths, H. J., Sumner, M., Provoost, P., Raymond, B., Ropert-Coudert, Y., & Van de Putte, A. P. (2023). Opportunities and limitations of large open biodiversity occurrence databases in the context of a Marine Ecosystem Assessment of the Southern Ocean. *Frontiers in Marine Science, 10*, Article 1150603. https://doi.org/10.3389/fmars.2023.1150603
+
+- Menegotto, A., & Rangel, T. F. (2018). Mapping knowledge gaps in marine diversity reveals a latitudinal gradient of missing species richness. *Nature Communications, 9*, Article 4713. https://doi.org/10.1038/s41467-018-07217-7
+
+- Mora, C., Tittensor, D. P., & Myers, R. A. (2008). The completeness of taxonomic inventories for describing the global diversity and distribution of marine fishes. *Proceedings of the Royal Society B: Biological Sciences, 275*, 149–155. https://doi.org/10.1098/rspb.2007.1315
+
+- Saeedi, H. (2026). Gaps and drivers of global marine animal biodiversity from the surface to abyss. *Nature Communications, 17*, Article 4553. https://doi.org/10.1038/s41467-026-73613-z
+
+- Vandepitte, L., Bosch, S., Tyberghein, L., Waumans, F., Vanhoorne, B., Hernandez, F., De Clerck, O., & Mees, J. (2015). Fishing for data and sorting the catch: Assessing the data quality, completeness and fitness for use of data in marine biogeographic databases. *Database, 2015*, Article bau125. https://doi.org/10.1093/database/bau125
+
+- Chao, A., & Jost, L. (2012). Coverage-based rarefaction and extrapolation: Standardizing samples by completeness rather than size. *Ecology, 93*(12), 2533–2547. https://doi.org/10.1890/11-1952.1
+
+- Hsieh, T. C., Ma, K. H., & Chao, A. (2016). iNEXT: An R package for rarefaction and extrapolation of species diversity (Hill numbers). *Methods in Ecology and Evolution, 7*(12), 1451–1456. https://doi.org/10.1111/2041-210X.12613
+
