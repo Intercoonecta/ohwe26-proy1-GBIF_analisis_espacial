@@ -30,14 +30,17 @@ use_condaenv("CopernicusMarine", required = TRUE)
 cmt <- import("copernicusmarine")
 
 # 3.-Realizar la autentificación en Coperninus Marine Service
-## Para ello, remplaza los siguientes datos con tus credenciales (usario y contraseña): 
+## Configura estas variables de entorno con tus credenciales antes de ejecutar el script.
+usuario_copernicus <- Sys.getenv("COPERNICUS_USERNAME")
+password_copernicus <- Sys.getenv("COPERNICUS_PASSWORD")
 
-usuario_copernicus <- "edumart"
-password_copernicus <- "Copernicus17."
+if (!nzchar(usuario_copernicus) || !nzchar(password_copernicus)) {
+  stop("Define COPERNICUS_USERNAME y COPERNICUS_PASSWORD en las variables de entorno antes de continuar.")
+}
 
-# 4.-Una vez que verifiques que tus datos sean correctos ejecuta el código y continuar
+# 4.-Verifica que las variables de entorno estén configuradas antes de continuar
 
-cmt$login("edumart", "Copernicus17.")
+cmt$login(usuario_copernicus, password_copernicus)
 
 # 5.-Definición de parámetros para el anális de la variable de interés
 
@@ -50,7 +53,7 @@ variables <- list("thetao")
 # 6.- Creación de la carpeta de salida 
   output_dir <- file.path("./data/_Copernicus") 
   
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 # 7.-Definición de límites geográficos y temporales según el proyecto durante el periodo de 1993 al 2020 
 # (Coordenadas ajustadas al área de estudio entro de Copernicus)
@@ -114,7 +117,7 @@ print(nc)
 depth <- ncdf4::ncvar_get(nc, "depth")
 depth
 
-# 12.- Explorando las fechas disponibles para realizar un análisis preliminar de la temperatura superficial del área de estudio a través del tiempo
+# 12.- Explorando las fechas disponibles para realizar un análisis preliminar de la temperatura superficial del área de estudio a través del tiempo (1993-2020)
 
 time(sst)
 

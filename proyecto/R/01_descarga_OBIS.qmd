@@ -1,0 +1,728 @@
+---
+title: "OBIS | Caracterización espacio-temporal y taxonómica de registros de biodiversidad marina"
+subtitle: "Proyecto 1 en OHWe 2026"
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: true
+  message: true
+  execute-dir: project
+params:
+  lon_min: -100
+  lon_max: -88
+  lat_min: -3
+  lat_max: 9
+  year_start: 1990
+  year_end: 2025
+  execute_download: true
+  grid_res: 0.25
+  run_rarefaction: true
+  max_rarefaction_groups: 4
+  n_saturation_groups_per_rank: 3
+  min_records_cell_rarefaction: 20
+  max_saturation_cell_units: 10000
+  saturation_curve_points: 35
+---
+
+## 1. ¿Qué hace este QMD?
+
+Este documento descarga registros de ocurrencia de **OBIS** mediante **`robis`**, para un dominio geográfico y periodo definido. Los datos se almacenan por año en `raw/obis/` y posteriormente se integran.
+
+La base integrada se somete a procesos de **depuración, validación y estandarización taxonómica, espacial y temporal**, excluyendo registros no pertinentes, como fósiles, ausencias y duplicados. El resultado se almacena en una base estandarizada en `cin/obis/`.
+
+Se realiza un **análisis exploratorio de datos (EDA)** para evaluar la distribución de registros por **año, mes y grupo taxonómico**, así como su cobertura y continuidad espacio-temporal. Esto permite identificar grupos biológicos con información adecuada para posteriores análisis de **diversidad** y su relación con **variables oceanográficas**.
+
+## 2. Configuración y funciones
+
+```{r}
+#| label: setup
+required <- c("robis", "dplyr", "readr", "ggplot2", "tibble", "cowplot")
+missing <- required[!vapply(required,requireNamespace,logical(1),quietly=TRUE)]
+if(length(missing)) stop("Instala paquetes: install.packages(c(",paste(shQuote(missing),collapse = ", "),"))")
+
+root <- if (dir.exists("R") && file.exists("R/main.R")) "." else if (file.exists("main.R") && dir.exists("../raw")) ".." else stop("No encuentro R/main.R; ejecuta desde la raíz del proyecto")
+
+root <- normalizePath(root,winslash="/")
+
+source(file.path(root,"R","main.R"),local = TRUE)
+
+# Verificación temprana de que main.R coincide con esta versión del QMD.
+# Evita descubrir funciones faltantes después de la descarga o depuración.
+obis_assert_functions(
+  c(
+    "obis_cell_accumulation_screening",
+    "obis_clean_standardize",
+    "obis_download_period",
+    "obis_eda_tables",
+    "obis_event_coverage_by_year",
+    "obis_integrate_raw",
+    "obis_paths",
+    "obis_plot_cell_accumulation",
+    "obis_plot_map_taxa",
+    "obis_plot_map_years",
+    "obis_plot_record_thinning",
+    "obis_plot_saturation_domain",
+    "obis_plot_saturation_map",
+    "obis_plot_saturation_thresholds",
+    "obis_plot_spatial_facets",
+    "obis_rarefaction_screening",
+    "obis_record_thinning_screening",
+    "obis_records_saturation_screening",
+    "obis_selected_years",
+    "obis_spatial_screening",
+    "obis_taxon_suitability",
+    "obis_taxonomic_screening",
+    "obis_validate_config",
+    "obis_wkt",
+    "obis_write_csv"
+  ),
+  env = environment()
+)
+cat("Funciones OBIS verificadas: ", 25 , "\n", sep = "")
+
+# Estilo consistente para todos los gráficos de este informe.
+ggplot2::theme_set(cowplot::theme_cowplot(font_size = 11))
+
+p <- params
+obis_validate_config(p)
+years <- seq.int(as.integer(p$year_start),as.integer(p$year_end))
+paths <- obis_paths(root)
+wkt <- obis_wkt(p)
+cat("Dominio:",wkt,
+    "\nPeriodo:",min(years),"-",max(years),
+    "\nDescarga:",p$execute_download,"\n")
+```
+
+## 3. Descarga anual de ocurrencias e integración 
+
+Se realiza **una consulta por año**, conservando todos los campos en OBIS en CSV, y se integran los archivos anuales mediante `dplyr::bind_rows()`.
+
+
+```{r}
+#| label: download
+manifest <- obis_download_period(years,wkt,paths$raw,p$execute_download)
+obis_write_csv(manifest,file.path(paths$tab,"manifest_descargas.csv"))
+print(manifest)
+```
+```{r}
+#| label: integrate
+raw_all <- obis_integrate_raw(manifest,years,paths$raw)
+
+if (is.null(raw_all)) {
+  warning("Faltan años o existen CSV inválidos: consulta cout/obis/tab/manifest_descargas.csv")
+} else {
+  cat("Ocurrencias:",nrow(raw_all),"\nColumnas:",ncol(raw_all),"\n")
+}
+```
+
+## 4. Depuración y estandarización
+
+Se conservan registros georreferenciados, identificados a especie y de afinidad marina confirmada. Se excluyen fósiles, ausencias, registros descartados por OBIS y alertas explícitas de tierra. Se revisa cada exclusión. 
+
+```{r}
+#| label: clean
+processed <- obis_clean_standardize(raw_all,p)
+clean <- if(is.null(processed)) NULL else processed$clean
+if (!is.null(processed)) {
+  obis_write_csv(processed$audit,file.path(paths$tab,"rev_depuracion.csv"))
+  obis_write_csv(dplyr::count(processed$quality,source_year,reason,name="n"),
+                 file.path(paths$tab,"rev_por_anio.csv"))
+  obis_write_csv(processed$missing_fields,file.path(paths$tab,"rev_campos.csv"))
+  print(processed$audit,n=Inf)
+  cat("Registros retenidos:",nrow(clean),"\n")
+}
+```
+
+## 5. Evaluación de grupos taxonómicos
+
+La selección exploratoria considera el número de especies, años representados, continuidad temporal, localidades aproximadas y diversidad de conjuntos de datos, por **filo, clase, orden y familia**. 
+
+```{r}
+#| label: screening
+screening <- obis_taxonomic_screening(clean,years)
+if(!is.null(screening)) {
+  obis_write_csv(screening$representativity,file.path(paths$tab,"candidatos_taxonomicos.csv"))
+  obis_write_csv(screening$yearly_taxa,file.path(paths$tab,"registros_por_anio_y_taxon.csv"))
+  print(utils::head(dplyr::arrange(screening$representativity,dplyr::desc(coverage_screen),
+             dplyr::desc(years_present),dplyr::desc(records)),25),n=25)
+}
+```
+
+## 6. EDA de registros
+
+Las figuras muestran **cobertura temporal documental**. Las tablas de conteos incluyen todos los grupos; para visualizar la composición se presentan los doce taxones con más registros en cada rango.
+
+```{r}
+#| label: eda
+eda <- obis_eda_tables(clean)
+if (!is.null(eda)) {
+  obis_write_csv(eda$year_month,file.path(paths$tab,"registros_por_anio_mes.csv"))
+  
+  g1 <- ggplot2::ggplot(eda$yearly,ggplot2::aes(year_analysis,records)) +
+    ggplot2::geom_col(fill="grey45", colour = "#000000") +
+    ggplot2::labs(
+      title = "OBIS: ocurrencias por año",x = NULL,y = "Número de registros") +
+    ggplot2::scale_x_continuous(breaks = seq(min(years), max(years), by = 5)) + 
+    cowplot::theme_cowplot()
+  
+  print(g1)
+  
+  ggplot2::ggsave(file.path(paths$fig,"01_registros_por_anio.png"),g1,
+                  width = 11*0.7, height = 5*0.7, dpi = 350)
+  
+  g2 <- ggplot2::ggplot(eda$monthly,
+                        ggplot2::aes(factor(month_analysis,levels=1:12),records)) +
+    ggplot2::geom_col(fill="grey45", colour = "#000000") +
+    ggplot2::labs(title="OBIS: ocurrencias por mes",x=NULL,y="Número de registros") +
+    cowplot::theme_cowplot()
+  print(g2)
+  
+  ggplot2::ggsave(file.path(paths$fig,"02_registros_por_mes.png"),
+                  g2,width=9*0.7,height=5*0.7,dpi=350)
+  
+  g3 <- ggplot2::ggplot(eda$year_month,
+                        ggplot2::aes(year_analysis,month_analysis,fill=records)) +
+    ggplot2::geom_tile(colour = "#000000") +
+    ggplot2::scale_fill_viridis_c() +
+    ggplot2::scale_y_continuous(breaks=1:12) +
+    ggplot2::labs(title = "OBIS: ocurrencias por año y mes", x=NULL,y=NULL,fill="Registros") +
+    cowplot::theme_cowplot()
+  
+  print(g3)
+  
+  ggplot2::ggsave(file.path(paths$fig,"03_anio_mes.png"),
+                  g3,width=11*0.7,height=5*0.7,dpi=350)
+  
+
+  if (!is.null(screening)) {
+
+  for (nivel in c("phylum", "class", "order", "family", "genus")) {
+
+    tax <- screening$yearly_taxa |>
+      dplyr::filter(.data$rank == .env$nivel)
+
+    # Taxones líderes ordenados de mayor a menor
+    leaders <- tax |>
+      dplyr::group_by(taxon) |>
+      dplyr::summarise(
+        total = sum(records, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      dplyr::arrange(dplyr::desc(total)) |>
+      dplyr::slice_head(n = 12)
+
+    # Mantener solo esos taxones y fijar orden
+    plot_data <- tax |>
+      dplyr::filter(.data$taxon %in% leaders$taxon) |>
+      dplyr::mutate(
+        taxon = factor(.data$taxon, levels = leaders$taxon)
+      )
+
+    if (nrow(plot_data) == 0) next
+
+    plot <- ggplot2::ggplot(
+      plot_data,
+      ggplot2::aes(
+        x = year_analysis,
+        y = records,
+        group = taxon
+      )
+    ) +
+      ggplot2::geom_line(linewidth = 0.7) +
+      ggplot2::geom_point(size = 0.8) +
+      ggplot2::facet_wrap(~ taxon, scales = "free_y", ncol = 3) +
+      ggplot2::labs(
+        title = paste("OBIS: registros por", nivel),
+        subtitle = "Taxones ordenados de mayor a menor según el total de registros",
+        x = "Año",
+        y = "Ocurrencias"
+      ) +
+      cowplot::theme_cowplot(font_size = 12) +
+      ggplot2::theme(
+        strip.text = ggplot2::element_text(face = "bold"),
+        plot.title = ggplot2::element_text(face = "bold")
+      )
+
+    print(plot)
+
+    ggplot2::ggsave(
+      filename = file.path(paths$fig, paste0("04_taxones_", nivel, "_facet.png")),
+      plot = plot,
+      width = 12,
+      height = 8,
+      dpi = 350
+    )
+  }
+  }
+}
+```
+
+## 7. Representatividad espacial por grupo taxonómico
+
+Se evalúa **qué tan distribuidos espacialmente están los registros** antes de seleccionar un grupo para estudiar diversidad. La cuadrícula diagnóstica de `grid_res` grados, no establece ausencias y no sustituye un diseño de muestreo. Se resumen registros, celdas con observaciones y concentración espacial **por año y por filo, clase u orden**. Las celdas sin registros no se interpretan como ausencias.
+
+```{r}
+#| label: spatial-screening
+spatial <- NULL
+if (!is.null(clean) && nrow(clean)) {
+  # Se cuantifica el número de celdas observadas por grupo y año.
+  spatial <- obis_spatial_screening(
+    clean = clean,
+    p = p,
+    grid_res = p$grid_res,
+    ranks = c("phylum", "class", "order")
+  )
+
+  obis_write_csv(spatial$cell_counts,
+                 file.path(paths$tab, "celdas_por_taxon_anio.csv"))
+  obis_write_csv(spatial$annual,
+                 file.path(paths$tab, "cobertura_espacial_taxon_anio.csv"))
+  obis_write_csv(spatial$summary,
+                 file.path(paths$tab, "cobertura_espacial_taxon_resumen.csv"))
+
+  print(utils::head(spatial$summary, 20), n = 20)
+}
+```
+
+### Distribución espacial anual por grupo
+
+Las facetas conservan el orden de **mayor a menor número total de registros**. La primera figura muestra cuántas celdas cuentan con registros; la segunda, la proporción de registros concentrados en la celda dominante; la tercera, el promedio de registros por celda ocupada. 
+
+```{r}
+#| label: spatial-facets
+#| fig-width: 12
+#| fig-height: 8
+if (!is.null(spatial) && nrow(spatial$annual)) {
+  for (nivel in c("phylum", "class", "order")) {
+    for (metric in c("n_cells", "max_cell_share", "mean_records_per_cell")) {
+      plot <- obis_plot_spatial_facets(
+        annual = spatial$annual,
+        rank_value = nivel,
+        metric = metric,
+        n_top = 12
+      )
+      if (is.null(plot)) next
+      print(plot)
+      
+      ggplot2::ggsave(
+        filename = file.path(paths$fig, paste0("05_espacial_", nivel, "_", metric, ".png")),
+        plot = plot, width = 12, height = 8, dpi = 350, bg = "white"
+      )
+    }
+  }
+}
+```
+
+## 8. Diagnóstico para seleccionar grupos candidatos
+
+Se combinan indicadores temporales y espaciales para **comparar filos, clases y órdenes**. La evaluación incluye número de especies identificadas, años con registros, racha de continuidad, celdas observadas por año, dominancia de la celda principal y procedencia de los registros. Los criterios son **diagnósticos**, no una validación automática del esfuerzo independiente ni una clasificación objetiva de qué taxón es ecológicamente mejor.
+
+```{r}
+#| label: integrated-screening
+suitability <- NULL
+if (!is.null(spatial) && !is.null(screening)) {
+  suitability <- obis_taxon_suitability(
+    representativity = screening$representativity,
+    spatial_summary = spatial$summary
+  )
+  obis_write_csv(suitability,
+                 file.path(paths$tab, "idoneidad_taxonomica_espaciotemporal.csv"))
+  print(utils::head(suitability, 30), n = 30)
+}
+```
+
+## 9. Curvas exploratorias de rarefacción por eventos
+
+La rarefacción por incidencia necesita **unidades de muestreo identificables** (p. ej., `eventID` dentro de un dataset). Un registro OBIS no equivale automáticamente a un individuo ni a un evento independiente. Para evitar mezclar protocolos incompatibles, este diagnóstico utiliza **un solo dataset por grupo**, elegido por número de eventos identificados. Se omiten los grupos sin eventos repetidos con distintas especies o sin suficiente información. Las curvas son **exploratorias de completitud documental**; no se usarán para inferir cambios de riqueza entre años ni para corregir definitivamente la diversidad sin comprobar el diseño de muestreo.
+
+```{r}
+#| label: rarefaction
+#| fig-width: 11
+#| fig-height: 7
+rarefaction <- NULL
+if (isTRUE(p$run_rarefaction) && !is.null(suitability) && !is.null(clean) && nrow(clean)) {
+  if (!requireNamespace("iNEXT", quietly = TRUE)) {
+    warning("No está instalado iNEXT. Para incluir rarefacción: install.packages('iNEXT')")
+  } else {
+    rarefaction <- obis_rarefaction_screening(
+      clean = clean,
+      suitability = suitability,
+      ranks = c("class", "order"),
+      max_groups = as.integer(p$max_rarefaction_groups)
+    )
+    obis_write_csv(rarefaction$audit,
+                   file.path(paths$tab, "rarefaccion_diagnostico_eventos.csv"))
+    if (length(rarefaction$plots)) {
+      for (key in names(rarefaction$plots)) {
+        gp <- rarefaction$plots[[key]]
+        print(gp)
+        ggplot2::ggsave(
+          file.path(paths$fig, paste0("06_rarefaccion_", key, ".png")),
+          plot = gp, width = 10, height = 6, dpi = 350
+        )
+      }
+    }
+    print(rarefaction$audit, n = Inf)
+  }
+}
+```
+
+**Criterio de selección final.** Un candidato deberá presentar suficientes especies, continuidad entre años, cobertura de múltiples celdas y evidencia de muestreo comparable. Una gran cantidad de registros en una sola celda, o procedentes de una única campaña, puede invalidar una comparación espacial de diversidad. La selección definitiva se efectuará posteriormente y, si corresponde, se estimará la diversidad de **especies dentro de un grupo taxonómico focal**, sin mezclar indiscriminadamente organismos de ecologías distintas.
+
+
+## 10. Cartografía diagnóstica de cobertura espacial y taxonómica
+
+La cantidad de ocurrencias no demuestra que el área esté homogéneamente muestreada. Se representan **registros por celda** y **número de años documentados por celda** para los taxones principales de cada **filo, clase y orden**, utilizando `grid_res` únicamente como resolución de diagnóstico. Los paneles se ordenan de mayor a menor volumen de registros. Las celdas en blanco indican **ausencia de registros disponibles**, no ausencia de especies. Si están instalados `sf` y `rnaturalearth`, se incorpora la línea de costa.
+
+```{r}
+#| label: spatial-taxonomic-maps
+#| fig-width: 14
+#| fig-height: 8
+if (!is.null(spatial) && nrow(spatial$cell_counts)) {
+  for (nivel in c("phylum", "class", "order")) {
+    for (indicador in c("records", "years")) {
+      mapa <- obis_plot_map_taxa(
+        cell_counts = spatial$cell_counts,
+        rank_value = nivel,
+        grid_res = p$grid_res,
+        p = p,
+        metric = indicador,
+        n_top = 6L
+      )
+      if (is.null(mapa)) next
+      print(mapa)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("07_mapa_", nivel, "_", indicador, ".png")),
+        mapa, width = 14, height = 8, dpi = 350, bg = "white"
+      )
+    }
+  }
+}
+```
+
+### Mapas de cuatro años de referencia
+
+Para cada nivel se muestran los **cuatro taxones con más registros** y **cuatro años repartidos a lo largo de la serie**. Se genera un mapa de ocurrencias y otro de **especies documentadas por celda y año**. Estos últimos son mapas de riqueza *registrada*, sin corrección de esfuerzo, y todavía no constituyen estimaciones comparables de diversidad.
+
+```{r}
+#| label: annual-taxonomic-maps
+#| fig-width: 16
+#| fig-height: 11
+if (!is.null(spatial) && nrow(spatial$cell_counts)) {
+  map_years <- obis_selected_years(years, n = 4L)
+  for (nivel in c("phylum", "class", "order")) {
+    for (indicador in c("records_cell", "species_cell")) {
+      mapa <- obis_plot_map_years(
+        cell_counts = spatial$cell_counts,
+        rank_value = nivel,
+        grid_res = p$grid_res,
+        p = p,
+        selected_years = map_years,
+        n_top = 4L,
+        metric = indicador
+      )
+      if (is.null(mapa)) next
+      print(mapa)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("08_mapa_anual_", nivel, "_", indicador, ".png")),
+        mapa, width = 16, height = 11, dpi = 350, bg = "white"
+      )
+    }
+  }
+}
+```
+
+## 11. Sensibilidad espacial de la riqueza documentada
+
+Se evalúa cuánto cambia el número de especies recuperadas al incrementar la **cantidad de celdas con ocurrencias**. En cada grupo y año se permutan aleatoriamente las celdas informadas, se acumulan especies y se registra cuántas celdas son necesarias para recuperar, en promedio, el **90 % de las especies ya registradas**. La incertidumbre entre permutaciones se representa mediante bandas de percentiles. Esta prueba permite detectar concentración espacial de la información, pero **no estima la riqueza verdadera ni demuestra que una celda sin registros carezca de especies**.
+
+El resultado `min_cells_to_recover_fraction` es un umbral *empírico y condicionado a los datos disponibles*. Un valor bajo no garantiza muestreo suficiente: si todas las observaciones proceden de una sola zona, la acumulación puede parecer completa y aun así faltar buena parte del ecosistema.
+
+```{r}
+#| label: spatial-richness-sensitivity
+#| fig-width: 15
+#| fig-height: 9
+cell_sensitivity <- NULL
+if (!is.null(suitability) && !is.null(clean) && nrow(clean)) {
+  cell_sensitivity <- obis_cell_accumulation_screening(
+    clean = clean,
+    suitability = suitability,
+    p = p,
+    grid_res = p$grid_res,
+    ranks = c("class", "order"),
+    n_groups_per_rank = 3L,
+    n_years = 4L,
+    n_perm = 50L,
+    target = 0.90
+  )
+
+  if (nrow(cell_sensitivity$summary)) {
+    obis_write_csv(
+      cell_sensitivity$summary,
+      file.path(paths$tab, "sensibilidad_riqueza_numero_celdas.csv")
+    )
+    obis_write_csv(
+      cell_sensitivity$curves,
+      file.path(paths$tab, "curvas_acumulacion_por_celdas.csv")
+    )
+    print(cell_sensitivity$summary, n = 40)
+
+    for (nivel in c("class", "order")) {
+      grafico <- obis_plot_cell_accumulation(
+        curves = cell_sensitivity$curves,
+        rank_value = nivel
+      )
+      if (is.null(grafico)) next
+      print(grafico)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("09_acumulacion_celdas_", nivel, ".png")),
+        grafico, width = 15, height = 9, dpi = 350, bg = "white"
+      )
+    }
+  } else {
+    message("No hay grupos-año con suficientes celdas y especies para el diagnóstico espacial.")
+  }
+}
+```
+
+## 12. Rarefacción basada en cobertura por año y grupo
+
+Las curvas clásicas de riqueza frente a número de **ocurrencias OBIS** pueden ser engañosas: una ocurrencia no es necesariamente un individuo independiente. Para estimar un número mínimo de **eventos de muestreo** por año, se exige `eventID` asociado a un dataset identificable, se conserva un único dataset por grupo y año y se construye incidencia *especie × evento*. Se utiliza `iNEXT` (`q = 0`) para evaluar si, **dentro del tamaño muestral observado**, se alcanza una cobertura de referencia del 90 %. Si no se alcanza, el mínimo queda como `NA`.
+
+**Interpretación:** `min_events_target` es el mínimo interpolado de eventos para lograr la cobertura elegida *bajo los supuestos de incidencia y homogeneidad del protocolo*. **No existe un mínimo universal de registros OBIS por año** ni el valor calculado certifica estabilidad de mapas de riqueza. Además de cobertura, debe comprobarse distribución de celdas, procedencia de datasets y consistencia de los métodos de observación.
+
+```{r}
+#| label: yearly-incidence-coverage
+coverage_yearly <- NULL
+if (isTRUE(p$run_rarefaction) && !is.null(suitability) &&
+    !is.null(clean) && nrow(clean)) {
+  coverage_yearly <- obis_event_coverage_by_year(
+    clean = clean,
+    suitability = suitability,
+    ranks = c("class", "order"),
+    n_groups_per_rank = 3L,
+    n_years = 12L,
+    target_coverage = 0.90
+  )
+  if (nrow(coverage_yearly)) {
+    obis_write_csv(
+      coverage_yearly,
+      file.path(paths$tab, "cobertura_muestral_eventos_por_anio.csv")
+    )
+    print(coverage_yearly, n = 60)
+  } else {
+    message("No hay eventos suficientes o falta iNEXT para estimar cobertura por año.")
+  }
+}
+```
+
+### Criterios de decisión para seleccionar un taxón
+
+La selección final no dependerá de un solo índice. Un grupo es **candidato para un análisis posterior**, y no automáticamente válido, cuando combina: (i) continuidad temporal, (ii) múltiples especies y datasets, (iii) suficiente número de celdas con registros distribuidas espacialmente, (iv) baja concentración en una sola celda y (v) inventarios con evidencia de cobertura adecuada basada en **eventos verdaderamente comparables**. Se priorizará estudiar **riqueza de especies dentro de un clado focal** (clase u orden, o familia si fuera necesario), no combinar indiscriminadamente plancton, peces y cetáceos.
+
+No se calculará aquí diversidad alfa/beta ni se inferirá una tendencia biológica a partir de los conteos de ocurrencias. Los mapas de esta sección son auditorías de **aptitud de los datos para análisis posteriores**.
+
+
+
+## 13. Sensibilidad del mapa de riqueza al número de ocurrencias
+
+Para responder a la pregunta sobre un posible **mínimo de registros por año**, se realiza un experimento interno de *submuestreo aleatorio de ocurrencias* para taxones candidatos en años seleccionados. Se comparan los mapas de especies registradas por celda obtenidos con diferentes fracciones de la base disponible contra el mapa elaborado con todos los registros del mismo taxón y año. La comparación combina: **correlación espacial de Spearman (≥ 0,90)**, **recuperación de especies documentadas (≥ 90 %)** y **proporción de celdas documentadas conservadas (≥ 80 %)**. Se exige que los tres criterios se cumplan en al menos **90 % de las permutaciones**.
+
+El campo `min_records_map_stability_conditional` indica el menor tamaño muestral que cumple esas reglas *en relación con la muestra observada*. **No es un mínimo universal ni una validación de diversidad ecológica**: la base de referencia puede estar espacialmente sesgada. Los umbrales son configuraciones exploratorias cuya sensibilidad deberá evaluarse posteriormente.
+
+```{r}
+#| label: thinning-map-stability
+#| fig-width: 15
+#| fig-height: 9
+record_stability <- NULL
+if (!is.null(suitability) && !is.null(clean) && nrow(clean)) {
+  record_stability <- obis_record_thinning_screening(
+    clean = clean,
+    suitability = suitability,
+    p = p,
+    grid_res = p$grid_res,
+    ranks = c("class", "order"),
+    n_groups_per_rank = 2L,
+    n_years = 4L,
+    n_perm = 30L
+  )
+  if (nrow(record_stability$summary)) {
+    obis_write_csv(
+      record_stability$summary,
+      file.path(paths$tab, "estabilidad_mapa_min_registros_condicional.csv")
+    )
+    obis_write_csv(
+      record_stability$curves,
+      file.path(paths$tab, "curvas_estabilidad_mapa_registros.csv")
+    )
+    print(record_stability$summary, n = 40)
+    for (nivel in c("class", "order")) {
+      grafico <- obis_plot_record_thinning(record_stability$curves, nivel)
+      if (is.null(grafico)) next
+      print(grafico)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("10_estabilidad_mapa_", nivel, ".png")),
+        grafico, width = 15, height = 9, dpi = 350, bg = "white"
+      )
+    }
+  }
+}
+```
+
+
+## 14. Saturación de riqueza frente al número de registros OBIS
+
+Esta sección responde directamente a dos preguntas: **(1) cuántos registros OBIS son necesarios para recuperar el 90 % o el 95 % de las especies ya documentadas en el dominio, por grupo y año; y (2) cómo cambia ese umbral cuando la unidad espacial es una celda de `grid_res` grados**.
+
+Se utiliza la rarefacción exacta sin reemplazo sobre **registros de ocurrencia**, con la fórmula hipergeométrica de la riqueza esperada. **No se interpreta una ocurrencia como un individuo** ni se considera que los registros sean observaciones independientes de un diseño probabilístico. Por tanto, las curvas documentan una **sensibilidad interna al número de registros**, no la riqueza verdadera ni un tamaño de muestra universal. Si el conjunto original proviene de una estación dominante o de métodos distintos, una aparente meseta puede ser engañosa.
+
+Para cada taxón-año del **dominio completo** se calculan `n_records`, `n_species`, `n_required_90` y `n_required_95`. Para cada **celda-año**, las curvas se calculan cuando hay al menos `min_records_cell_rarefaction` registros y dos especies; todas las demás celdas documentadas quedan auditadas explícitamente como insuficientes. Las celdas sin registros **no** se interpretan como ausencias biológicas.
+
+La evaluación se realiza para los primeros grupos prioritarios en los niveles filo, clase y orden. La prioridad utiliza la tabla previa de idoneidad espacio-temporal y se conserva el orden de los grupos de mayor a menor total de registros en las figuras. Se procesan todos los años disponibles de esos grupos; los gráficos de mapas y curvas muestran años de referencia para mantener el informe legible.
+
+```{r}
+#| label: records-richness-saturation
+record_saturation <- NULL
+if (!is.null(clean) && nrow(clean) && !is.null(suitability)) {
+  record_saturation <- obis_records_saturation_screening(
+    clean = clean,
+    suitability = suitability,
+    p = p,
+    grid_res = p$grid_res,
+    ranks = c("phylum", "class", "order"),
+    n_groups_per_rank = p$n_saturation_groups_per_rank,
+    min_cell_records = p$min_records_cell_rarefaction,
+    max_cell_units = p$max_saturation_cell_units,
+    n_points = p$saturation_curve_points
+  )
+
+  if (!is.null(record_saturation)) {
+    outputs <- list(
+      saturacion_registros_dominio_por_anio = record_saturation$domain_summary,
+      curvas_saturacion_registros_dominio = record_saturation$domain_curves,
+      saturacion_registros_celdas_por_anio = record_saturation$cell_summary,
+      curvas_saturacion_registros_celdas = record_saturation$cell_curves,
+      auditoria_saturacion_espacial_por_anio = record_saturation$audit
+    )
+    for (name in names(outputs)) {
+      obis_write_csv(outputs[[name]], file.path(paths$tab, paste0(name, ".csv")))
+    }
+    print(utils::head(record_saturation$audit, 20))
+  }
+}
+```
+
+### 14.1. Curvas de rarefacción por número de registros: todo el dominio
+
+La curva muestra `E[S(n)]` al aumentar el número de registros de OBIS. **N90 y N95 son los tamaños de submuestra necesarios para recuperar una fracción de la riqueza *ya observada***. El parámetro calculado no estima cuántas especies desconocidas faltan ni prueba que el conjunto sea representativo.
+
+```{r}
+#| label: saturation-domain-plots
+#| fig-width: 15
+#| fig-height: 10
+if (!is.null(record_saturation)) {
+  for (nivel in c("phylum", "class", "order")) {
+    curva <- obis_plot_saturation_domain(
+      record_saturation$domain_curves, rank_value = nivel,
+      n_top = p$n_saturation_groups_per_rank,
+      years_plot = obis_selected_years(years, 4L)
+    )
+    if (!is.null(curva)) {
+      print(curva)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("11_saturacion_dominio_", nivel, ".png")),
+        curva, width = 15, height = 10, dpi = 350, bg = "white"
+      )
+    }
+    umbrales <- obis_plot_saturation_thresholds(
+      record_saturation$domain_summary, rank_value = nivel
+    )
+    if (!is.null(umbrales)) {
+      print(umbrales)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("12_umbrales_registros_anuales_", nivel, ".png")),
+        umbrales, width = 15, height = 9, dpi = 350, bg = "white"
+      )
+    }
+  }
+}
+```
+
+### 14.2. Mapas por celda y año de los umbrales documentales
+
+Se cartografían para los principales grupos las ocurrencias, la riqueza documentada y el **cociente N95/N** en cada celda-año evaluable. Un N95/N elevado indica que se necesita casi toda la información *ya disponible* para recuperar el 95 % de las especies documentadas, pero un valor bajo **no garantiza cobertura de especies no registradas**. Se mantiene el tamaño de celda definido por `grid_res`.
+
+```{r}
+#| label: saturation-cell-maps
+#| fig-width: 16
+#| fig-height: 11
+if (!is.null(record_saturation) && nrow(record_saturation$cell_summary)) {
+  for (nivel in c("phylum", "class", "order")) {
+    for (indicador in c("n_records", "n_species", "fraction_n95")) {
+      mapa <- obis_plot_saturation_map(
+        record_saturation$cell_summary,
+        rank_value = nivel, p = p, grid_res = p$grid_res,
+        metric = indicador,
+        n_top = p$n_saturation_groups_per_rank,
+        years_plot = obis_selected_years(years, 4L)
+      )
+      if (is.null(mapa)) next
+      print(mapa)
+      ggplot2::ggsave(
+        file.path(paths$fig, paste0("13_saturacion_mapa_", nivel, "_", indicador, ".png")),
+        mapa, width = 16, height = 11, dpi = 350, bg = "white"
+      )
+    }
+  }
+}
+```
+
+### 14.3. Interpretación de los mínimos estimados
+
+- **Dominio completo:** `n_required_90` y `n_required_95` indican cuántas ocurrencias bastan para recuperar, en promedio, una proporción especificada de **las especies que ya aparecen en OBIS** para un taxón-año; **no** prueban inventarios completos.
+- **Celda-año:** se obtienen mínimos por celda solo cuando la información es suficiente para una curva descriptiva; celdas sin suficientes registros quedan auditadas.
+- **Distribución espacial:** se debe consultar `auditoria_saturacion_espacial_por_anio.csv`, especialmente `fraction_cells_evaluable` y el indicador `n95_is_near_full_sample`. No es adecuado elegir un clado solo por exhibir curvas planas si los registros están concentrados espacialmente.
+- **Validez científica:** la rarefacción por registros se complementa con la rarefacción por **eventos comparables**, cobertura muestral y estabilidad espacial ya implementadas en las secciones precedentes. El mínimo para un futuro diseño de muestreo requeriría además controlar detectabilidad, protocolo, localidades y unidades de muestreo independientes.
+
+
+## 15. Base integrada estandarizada
+
+El CSV de `cin/obis/` incluye únicamente el conjunto que pasó los filtros básicos, conservando la identidad taxonómica, los datos espacio-temporales y los campos de procedencia necesarios para evaluar posteriormente la idoneidad de cada grupo.
+
+```{r}
+#| label: export
+if(!is.null(clean) && nrow(clean)) {
+  destination <- file.path(paths$cin,sprintf("obis_occurrences_standardized_%d_%d.csv",min(years),max(years)))
+  obis_write_csv(clean,destination)
+  cat("Guardado:",destination,"\nFilas:",nrow(clean),"\n")
+} else {
+  warning("No se generó una base estandarizada: periodo incompleto o sin registros retenidos")
+}
+```
+
+
+
+
+
+### Referencias técnicas y científicas
+
+- [Manual de acceso a OBIS](https://manual.obis.org/access) y [calidad de datos de OBIS](https://manual.obis.org/dataquality.html).
+- [Referencia de `robis::occurrence()`](https://iobis.github.io/robis/reference/occurrence.html).
+- [Vandepitte et al. (2015), *Database*](https://doi.org/10.1093/database/bau125).
+- [Bonnet-Lebrun et al. (2023), *Frontiers in Marine Science*](https://doi.org/10.3389/fmars.2023.1150603).
+- [Menegotto y Rangel (2018), *Nature Communications*](https://doi.org/10.1038/s41467-018-07217-7).
+
+- [Manual de OBIS: identificadores de eventos y muestras](https://manual.obis.org/identifiers.html).
+- [iNEXT: rarefacción por incidencia y unidades de muestreo](https://cran.r-project.org/package=iNEXT).
+- [cowplot: `theme_cowplot()`](https://wilkelab.org/cowplot/reference/theme_cowplot.html).
+- Chao y Jost (2012). [Cobertura muestral y rarefacción](https://doi.org/10.1890/11-1952.1).
+- Hsieh, Ma y Chao (2016). [iNEXT: rarefacción/extrapolación](https://doi.org/10.1111/2041-210X.12613).
+- Menegotto y Rangel (2018). [Vacíos globales de conocimiento marino](https://doi.org/10.1038/s41467-018-07217-7).
+- [Completitud de inventarios globales de peces marinos](https://pmc.ncbi.nlm.nih.gov/articles/PMC2596190/).
+- [Biodiversidad marina global: cobertura y sesgos espaciales (2026)](https://doi.org/10.1038/s41467-026-73613-z).
