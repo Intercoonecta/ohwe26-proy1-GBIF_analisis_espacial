@@ -30,6 +30,7 @@
 - Elmer Quispe-Salazar (IMARPE, Perú)
 - Eduardo Martínez Angeles (IMIPAS, México)
 - Marina Bezerra Figueiredo (UEMA, Brasil)
+- Anthony Rojas Archbold (AUNAP, Colombia)
 
 ---
 
