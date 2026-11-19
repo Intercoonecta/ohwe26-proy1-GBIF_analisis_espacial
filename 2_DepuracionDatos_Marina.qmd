@@ -330,6 +330,7 @@ p_facet <- ggplot(serie_anual_class, aes(x = year, y = n_registros)) +
 
 print(p_facet)
 ```
+
 ## 8. Preparación del análisis de diversidad registrada
 
 Se analiza la riqueza observada y la composición de las listas de
@@ -436,7 +437,9 @@ write.csv(
   "resultados_GBIF/diversidad/resumen_grupos.csv",
   row.names = FALSE
 )
-```## 10. Riqueza y cobertura en 1970, 1979 y 1991
+```
+
+## 10. Riqueza y cobertura en 1970, 1979 y 1991
 
 Se comparan riqueza observada, registros y fuentes. Las diferencias
 pueden reflejar cambios de cobertura, métodos o grupos objetivo.
