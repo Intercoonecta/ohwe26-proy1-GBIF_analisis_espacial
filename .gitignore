@@ -1,6 +1,0 @@
-.Rproj.user
-.Rhistory
-.RData
-.Ruserdata
-# Ignora toda la carpeta obis y sus archivos CSV
-proyecto/raw/obis/
