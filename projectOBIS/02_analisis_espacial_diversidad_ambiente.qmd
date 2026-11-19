@@ -1,0 +1,1361 @@
+---
+title: "Análisis Espacial de Diversidad Marina y Relación Diversidad–Ambiente (1993–2020)"
+subtitle: "Fase 2 — Proyecto-1 OHWe 2026 | Teleostei (OBIS), H1–H3 y Anomalías Oceanográficas 0.25°"
+author: "Grupo R Hackaton 2026"
+date: today
+lang: es
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  execute-dir: project
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+paquetes <- c(
+  "readxl", "dplyr", "tidyr", "lubridate", "stringr", "ggplot2",
+  "patchwork", "sf", "rnaturalearth", "rnaturalearthdata", "terra",
+  "viridis", "corrplot", "leaflet", "knitr", "kableExtra"
+)
+
+faltantes <- paquetes[!(paquetes %in% installed.packages()[, "Package"])]
+if (length(faltantes) > 0) {
+  install.packages(faltantes, dependencies = TRUE, repos = "https://cloud.r-project.org")
+}
+invisible(lapply(paquetes, library, character.only = TRUE))
+
+ruta_repo <- function(rel) {
+  candidatos <- c(rel, file.path("..", rel))
+  hit <- candidatos[file.exists(candidatos)]
+  if (length(hit) > 0L) hit[[1]] else rel
+}
+
+source(ruta_repo("R/funciones_corredor.R"))
+```
+
+## 1. Integración Fase 1 (`01_`) $\rightarrow$ Fase 2 (`02_`) y Evaluación de Hipótesis (`H1–H3`)
+
+Este documento ejecuta la **Fase 2** del flujo de trabajo en `projectOBIS`, consumiendo directamente la base taxonómica curada en [`01_obis_seleccion_taxonomica.qmd`](01_obis_seleccion_taxonomica.qmd) (`01_obis_seleccion_taxonomica.html`):
+
+* **Base biológica principal ([`cin/obis_teleostei_1990_2025.csv`](cin/obis_teleostei_1990_2025.csv)) y respaldo GBIF ([`../2_DepuracionDatos.qmd`](../2_DepuracionDatos.qmd)):** Toma los registros estandarizados de **`Teleostei` (OBIS)** filtrados a **`1993–2020`** (**`24,607` registros**, **`358` especies**, **`27` años** y **`74` celdas de $0.25^\circ$**). Si no estuviera disponible, retrocede automáticamente a **OBIS + GBIF** o **GBIF depurado**.
+* **Serie oceanográfica real ([`../datos_ERSST.R`](../datos_ERSST.R)) y Copernicus Marine ([`../descarga_temperatura_copernicus_arojasar.R`](../descarga_temperatura_copernicus_arojasar.R)):** Extrae TSM mensual de **NOAA ERSST (`data/ersst/ersst_EC.rds`)** junto con **TSM (`thetao`) y Salinidad Superficial del Mar (`so`) mensuales de Copernicus Marine (`1993–2020`)** en el corredor (`99°W–86°W`, `2°S–7°N`).
+* **Grilla ambiental a $0.25^\circ$:** Combina `ambiente_galapagos_coco.tif` (Bio-ORACLE: TSM y Clorofila-*a*) y `data/copernicus_anomalias_grilla_025.csv` (Copernicus: TSM, Salinidad, anomalías espaciales y variación temporal) agregados exactamente a **$0.25^\circ \times 0.25^\circ$**.
+
+::: {.callout-warning}
+### Vínculo con la Alerta Crítica de Fase 1 (`01_obis_seleccion_taxonomica.qmd`)
+Los resultados biológicos de este análisis corresponden al polígono con el que se descargó `projectOBIS` (`-98° a -90° W`, `-0.5° a 6.5° N`, concentrado en Galápagos occidental), el cual deja fuera a la **Isla del Coco** (`~87.06° W, 5.53° N`). Las capas y mapas de anomalías oceanográficas cubren el corredor completo **`-99° a -86° W`, `-2° a 7° N`**.
+:::
+
+```{r}
+#| label: carga-integrada-pull
+
+# Funciones métricas de Diversidad Alfa y Beta
+calc_shannon <- function(conteos) {
+  conteos <- conteos[conteos > 0]
+  if (length(conteos) == 0) return(0)
+  p <- conteos / sum(conteos)
+  -sum(p * log(p))
+}
+
+calc_simpson <- function(conteos) {
+  conteos <- conteos[conteos > 0]
+  if (length(conteos) == 0) return(0)
+  p <- conteos / sum(conteos)
+  1 - sum(p^2)
+}
+
+jaccard_disim <- function(sp_a, sp_b) {
+  sp_a <- unique(stats::na.omit(sp_a))
+  sp_b <- unique(stats::na.omit(sp_b))
+  un <- length(union(sp_a, sp_b))
+  if (un == 0) return(NA_real_)
+  1 - (length(intersect(sp_a, sp_b)) / un)
+}
+
+sorensen_disim <- function(sp_a, sp_b) {
+  sp_a <- unique(stats::na.omit(sp_a))
+  sp_b <- unique(stats::na.omit(sp_b))
+  tot <- length(sp_a) + length(sp_b)
+  if (tot == 0) return(NA_real_)
+  1 - (2 * length(intersect(sp_a, sp_b)) / tot)
+}
+
+# 1) Carga de registros biológicos 1993-2020 (prioriza OBIS Teleostei de projectOBIS; luego OBIS+GBIF; luego GBIF depurado)
+# [CONEXIÓN Fase 1 -> Fase 2] Lee cin/obis_teleostei_1990_2025.csv generado en 01_obis_seleccion_taxonomica.qmd
+ruta_obis_teleostei <- if (file.exists("cin/obis_teleostei_1990_2025.csv")) {
+  "cin/obis_teleostei_1990_2025.csv"
+} else {
+  ruta_repo("projectOBIS/cin/obis_teleostei_1990_2025.csv")
+}
+ruta_obis_gbif <- ruta_repo("data/registros_obis_gbif_1993_2020.csv")
+ruta_gbif_dep <- ruta_repo("data/GBIF_Colon_Coco_especies_depurado.rds")
+
+if (file.exists(ruta_obis_teleostei)) {
+  registros_1993_2020 <- utils::read.csv(ruta_obis_teleostei, stringsAsFactors = FALSE) %>%
+    dplyr::mutate(
+      longitud = as.numeric(decimalLongitude),
+      latitud = as.numeric(decimalLatitude),
+      year = as.integer(year_analysis),
+      species = trimws(as.character(species_accepted)),
+      class = as.character(class),
+      order = as.character(order),
+      fuente = "OBIS Teleostei (projectOBIS)"
+    ) %>%
+    dplyr::filter(year >= 1993, year <= 2020, !is.na(species), species != "")
+  fuente_bio <- "OBIS Teleostei oficial (projectOBIS/cin/obis_teleostei_1990_2025.csv)"
+} else if (file.exists(ruta_obis_gbif)) {
+  registros_1993_2020 <- utils::read.csv(ruta_obis_gbif, stringsAsFactors = FALSE) %>%
+    dplyr::mutate(
+      longitud = as.numeric(dplyr::coalesce(longitud, decimalLongitude)),
+      latitud = as.numeric(dplyr::coalesce(latitud, decimalLatitude))
+    ) %>%
+    dplyr::filter(year >= 1993, year <= 2020, !is.na(species), trimws(species) != "")
+  fuente_bio <- "OBIS + GBIF combinados (archivo del equipo)"
+} else if (file.exists(ruta_gbif_dep)) {
+  registros_1993_2020 <- base::readRDS(ruta_gbif_dep) %>%
+    dplyr::rename(longitud = decimalLongitude, latitud = decimalLatitude) %>%
+    dplyr::filter(year >= 1993, year <= 2020, !is.na(species), trimws(species) != "") %>%
+    dplyr::mutate(fuente = "GBIF depurado (2_DepuracionDatos.qmd)")
+  fuente_bio <- "GBIF depurado oficial (data/GBIF_Colon_Coco_especies_depurado.rds)"
+} else {
+  datos_gbif <- readxl::read_excel(ruta_repo("data/GBIF_Colon_Coco_2026_TableToExcel original descargada de Gbif.xlsx"))
+  registros_1993_2020 <- depurar_gbif_corredor(datos_gbif)$fauna_marina %>%
+    dplyr::filter(year >= 1993, year <= 2020, !is.na(species), trimws(species) != "") %>%
+    dplyr::mutate(fuente = "GBIF depurado")
+  fuente_bio <- "GBIF depurado (fallback)"
+}
+
+# 2) Carga de serie real de TSM NOAA ERSST desde data/ersst/ersst_EC.rds (1993-2020)
+ersst_raw <- base::readRDS(ruta_repo("data/ersst/ersst_EC.rds"))
+ersst_attr <- attributes(ersst_raw)
+ersst_lon <- ersst_attr[["lon"]]
+ersst_lat <- ersst_attr[["lat"]]
+ersst_tm <- as.Date(ersst_attr[["period"]][["tmStart"]])
+ersst_mat <- ersst_attr[["data"]] # dimensiones: lat x lon x tiempo
+
+idx_lat <- which(ersst_lat >= -2 & ersst_lat <= 8)
+idx_lon <- which(ersst_lon >= -99 & ersst_lon <= -86)
+idx_t <- which(as.integer(format(ersst_tm, "%Y")) >= 1993 & as.integer(format(ersst_tm, "%Y")) <= 2020)
+
+ersst_sub <- ersst_mat[idx_lat, idx_lon, idx_t, drop = FALSE]
+ersst_yrs <- as.integer(format(ersst_tm[idx_t], "%Y"))
+
+tsm_anual_ersst <- tibble::tibble(year = 1993:2020) %>%
+  dplyr::mutate(
+    tsm_media = vapply(year, function(y) {
+      k <- which(ersst_yrs == y)
+      round(mean(ersst_sub[, , k], na.rm = TRUE), 3)
+    }, numeric(1)),
+    tsm_sd = vapply(year, function(y) {
+      k <- which(ersst_yrs == y)
+      round(stats::sd(as.numeric(ersst_sub[, , k]), na.rm = TRUE), 3)
+    }, numeric(1)),
+    tsm_anomalia = round(tsm_media - mean(tsm_media, na.rm = TRUE), 3)
+  )
+
+# 3) Carga de grilla ambiental 0.25° (Bio-ORACLE + Copernicus TSM y Salinidad)
+capas_bo <- cargar_capas_biooracle(ruta_repo("ambiente_galapagos_coco.tif"))
+capas_025 <- terra::aggregate(capas_bo, fact = 3, fun = mean, na.rm = TRUE)
+df_amb_025 <- as.data.frame(capas_025, xy = TRUE, na.rm = TRUE)
+names(df_amb_025) <- c("lon_025", "lat_025", "tsm_celda", "clorofila_celda")
+df_amb_025 <- df_amb_025 %>%
+  dplyr::mutate(
+    lon_025 = round(lon_025, 3),
+    lat_025 = round(lat_025, 3)
+  )
+
+ruta_cop_anual <- ruta_repo("data/copernicus_tsm_salinidad_anual_1993_2020.csv")
+ruta_cop_mensual <- ruta_repo("data/copernicus_tsm_salinidad_mensual_1993_2020.csv")
+ruta_cop_anom_025 <- ruta_repo("data/copernicus_anomalias_grilla_025.csv")
+ruta_cop_025 <- ruta_repo("data/copernicus_tsm_salinidad_grilla_025.csv")
+
+df_cop_mensual <- NULL
+if (file.exists(ruta_cop_mensual)) {
+  df_cop_mensual <- utils::read.csv(ruta_cop_mensual, stringsAsFactors = FALSE) %>%
+    dplyr::mutate(fecha = as.Date(fecha))
+}
+
+df_cop_025 <- NULL
+ruta_cop_grilla_activa <- if (file.exists(ruta_cop_anom_025)) ruta_cop_anom_025 else ruta_cop_025
+if (file.exists(ruta_cop_grilla_activa)) {
+  df_cop_025 <- utils::read.csv(ruta_cop_grilla_activa, stringsAsFactors = FALSE) %>%
+    dplyr::mutate(lon_025 = round(lon_025, 3), lat_025 = round(lat_025, 3))
+  df_amb_025 <- df_amb_025 %>%
+    dplyr::left_join(df_cop_025, by = c("lon_025", "lat_025"))
+}
+
+# 4) Integrar tabla anual oficial si el equipo ya la exportó, o calcular sobre datos reales actuales
+ruta_anual_equipo <- ruta_repo("data/diversidad_ambiente_anual_1993_2020.csv")
+ruta_grilla_equipo <- ruta_repo("data/biodiversidad_grilla_025_1993_2020.csv")
+
+if (file.exists(ruta_anual_equipo)) {
+  df_anual <- utils::read.csv(ruta_anual_equipo, stringsAsFactors = FALSE) %>%
+    dplyr::filter(year >= 1993, year <= 2020) %>%
+    dplyr::arrange(year)
+  tiene_salinidad_anual <- "salinidad_media" %in% names(df_anual) && any(!is.na(df_anual$salinidad_media))
+} else {
+  especies_pool <- unique(registros_1993_2020$species)
+  anios_obs <- sort(unique(registros_1993_2020$year))
+
+  div_anual <- lapply(seq_along(anios_obs), function(idx) {
+    yr <- anios_obs[idx]
+    sub <- registros_1993_2020 %>% dplyr::filter(year == yr)
+    cont <- sub %>% dplyr::count(species) %>% dplyr::pull(n)
+    sp_yr <- unique(sub$species)
+    tibble::tibble(
+      year = yr,
+      n_registros = nrow(sub),
+      riqueza_alpha = dplyr::n_distinct(sp_yr),
+      shannon_alpha = round(calc_shannon(cont), 3),
+      simpson_alpha = round(calc_simpson(cont), 3),
+      beta_jaccard = round(jaccard_disim(sp_yr, especies_pool), 3),
+      beta_sorensen = round(sorensen_disim(sp_yr, especies_pool), 3)
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  df_anual <- tsm_anual_ersst %>%
+    dplyr::left_join(div_anual, by = "year")
+  if (file.exists(ruta_cop_anual)) {
+    df_cop_anual <- utils::read.csv(ruta_cop_anual, stringsAsFactors = FALSE)
+    df_anual <- df_anual %>% dplyr::left_join(df_cop_anual, by = "year")
+  }
+  tiene_salinidad_anual <- "salinidad_media" %in% names(df_anual) && any(!is.na(df_anual$salinidad_media))
+}
+
+# 5) Grilla espacial de 0.25° x 0.25° (1993-2020)
+if (file.exists(ruta_grilla_equipo)) {
+  df_grilla_025 <- utils::read.csv(ruta_grilla_equipo, stringsAsFactors = FALSE)
+  tiene_salinidad_esp <- "salinidad_celda" %in% names(df_grilla_025) && any(!is.na(df_grilla_025$salinidad_celda))
+} else {
+  reg_celda <- registros_1993_2020 %>%
+    dplyr::mutate(
+      lon_025 = round(floor(longitud / 0.25) * 0.25 + 0.125, 3),
+      lat_025 = round(floor(latitud / 0.25) * 0.25 + 0.125, 3)
+    )
+
+  celdas_activas <- reg_celda %>%
+    dplyr::group_by(lon_025, lat_025) %>%
+    dplyr::summarise(
+      n_registros = dplyr::n(),
+      riqueza_alpha = dplyr::n_distinct(species),
+      shannon_alpha = round(calc_shannon(as.numeric(table(species))), 3),
+      simpson_alpha = round(calc_simpson(as.numeric(table(species))), 3),
+      n_clases = dplyr::n_distinct(class),
+      clases_lista = paste(sort(unique(class)), collapse = ", "),
+      especies_lista = paste(utils::head(unique(species), 5), collapse = ", "),
+      anios_activos = paste(sort(unique(year)), collapse = ", "),
+      .groups = "drop"
+    )
+
+  # Matriz de Beta espacial entre las celdas activas
+  sp_por_celda <- split(reg_celda$species, paste(reg_celda$lon_025, reg_celda$lat_025, sep = "_"))
+  llaves <- paste(celdas_activas$lon_025, celdas_activas$lat_025, sep = "_")
+  n_c <- length(llaves)
+  beta_esp <- numeric(n_c)
+  for (i in seq_len(n_c)) {
+    sp_i <- sp_por_celda[[llaves[i]]]
+    dists <- vapply(seq_len(n_c), function(j) {
+      if (i == j) return(NA_real_)
+      jaccard_disim(sp_i, sp_por_celda[[llaves[j]]])
+    }, numeric(1))
+    beta_esp[i] <- round(mean(dists, na.rm = TRUE), 3)
+  }
+  celdas_activas$beta_jaccard <- beta_esp
+
+  df_grilla_025 <- df_amb_025 %>%
+    dplyr::left_join(celdas_activas, by = c("lon_025", "lat_025")) %>%
+    dplyr::mutate(
+      n_registros = tidyr::replace_na(n_registros, 0L),
+      riqueza_alpha = tidyr::replace_na(riqueza_alpha, 0L)
+    )
+  tiene_salinidad_esp <- "salinidad_celda" %in% names(df_grilla_025) && any(!is.na(df_grilla_025$salinidad_celda))
+}
+```
+
+::: {.callout-note}
+### Estado de los datos reales conectados actualmente
+* **Datos biológicos (`1993–2020`):** `` `r fuente_bio` `` $\rightarrow$ **`r nrow(registros_1993_2020)` registros** (`r dplyr::n_distinct(registros_1993_2020$species)` especies únicas en `r dplyr::n_distinct(registros_1993_2020$year)` años y **`r sum(df_grilla_025$n_registros > 0)` celdas activas de $0.25^\circ$**).
+* **Serie temporal de TSM (`1993–2020`):** Datos reales de **NOAA ERSST (`data/ersst/ersst_EC.rds`)** (`336` meses promediados por año; media global del periodo = `r round(mean(df_anual$tsm_media), 2)` °C, pico El Niño 1997 = `r df_anual$tsm_media[df_anual$year == 1997]` °C y El Niño 2015 = `r df_anual$tsm_media[df_anual$year == 2015]` °C).
+* **Ambiente espacial a $0.25^\circ$:** Datos reales de **Bio-ORACLE** (`TSM` y `Clorofila-a` agregados exactamente a $0.25^\circ$).
+* **Salinidad Superficial del Mar y TSM (Copernicus Marine `1993–2020`):** `` `r ifelse(tiene_salinidad_anual | tiene_salinidad_esp, paste0("Integrada desde Copernicus (thetao y so, 1993–2020): Salinidad promedio = ", round(mean(df_anual$salinidad_media, na.rm = TRUE), 2), " PSU | TSM Copernicus = ", round(mean(df_anual$tsm_copernicus, na.rm = TRUE), 2), " °C."), "Pendiente de descarga en Copernicus.")` ``
+:::
+
+### Composición de la Diversidad Biológica: Comunidad Focal (`Teleostei`) vs. Subgrupos (`1993–2020`)
+
+Los índices de diversidad calculados en este informe (**Riqueza Alfa $S$**, **Shannon $H'$**, **Simpson $1-D$** y **Beta Jaccard / Sørensen**) evalúan **todas las especies presentes en la fuente activa (`r dplyr::n_distinct(registros_1993_2020$species)` especies únicas en `r format(nrow(registros_1993_2020), big.mark = ",")` registros, `1993–2020`)**. Al conectarse con `projectOBIS/cin/obis_teleostei_1990_2025.csv`, el análisis se enfoca en la clase **`Teleostei`** seleccionada en Fase 1 y se desglosa abajo por **orden taxonómico** (top 12 + otros órdenes); si se usa la base multiclase GBIF de respaldo, se desglosa por **clase**:
+
+```{r}
+#| label: resumen-grupos-taxonomicos
+
+total_reg_bio <- nrow(registros_1993_2020)
+total_spp_bio <- dplyr::n_distinct(registros_1993_2020$species)
+es_clase_unica <- dplyr::n_distinct(stats::na.omit(registros_1993_2020$class)) == 1L
+
+resumir_taxones_bio <- function(df, col_nivel, etiqueta_col, max_filas = Inf) {
+  tab <- df %>%
+    dplyr::mutate(grupo = dplyr::if_else(is.na(.data[[col_nivel]]) | trimws(.data[[col_nivel]]) == "", "Sin clasificar", as.character(.data[[col_nivel]]))) %>%
+    dplyr::group_by(grupo) %>%
+    dplyr::summarise(
+      registros = dplyr::n(),
+      especies_unicas = dplyr::n_distinct(species),
+      ejemplos = paste(utils::head(unique(species), 3), collapse = ", "),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(especies_unicas), dplyr::desc(registros))
+
+  if (is.finite(max_filas) && nrow(tab) > max_filas) {
+    top_df <- dplyr::slice_head(tab, n = max_filas)
+    resto <- base::setdiff(tab$grupo, top_df$grupo)
+    fila_resto <- df %>%
+      dplyr::mutate(grupo = dplyr::if_else(is.na(.data[[col_nivel]]) | trimws(.data[[col_nivel]]) == "", "Sin clasificar", as.character(.data[[col_nivel]]))) %>%
+      dplyr::filter(grupo %in% resto) %>%
+      dplyr::summarise(
+        grupo = paste0("Otros (", length(resto), " grupos)"),
+        registros = dplyr::n(),
+        especies_unicas = dplyr::n_distinct(species),
+        ejemplos = paste(utils::head(unique(species), 3), collapse = ", ")
+      )
+    tab <- dplyr::bind_rows(top_df, fila_resto)
+  }
+
+  tab %>%
+    dplyr::mutate(
+      pct_registros = round(100 * registros / total_reg_bio, 1),
+      pct_especies = round(100 * especies_unicas / total_spp_bio, 1)
+    ) %>%
+    dplyr::select(
+      !!etiqueta_col := grupo,
+      `Registros (n)` = registros,
+      `% Registros` = pct_registros,
+      `Especies Únicas (S)` = especies_unicas,
+      `% de Riqueza Total` = pct_especies,
+      `Especies Representativas` = ejemplos
+    )
+}
+
+if (es_clase_unica && "order" %in% names(registros_1993_2020)) {
+  tabla_grupos_bio <- resumir_taxones_bio(registros_1993_2020, "order", "Orden dentro de Teleostei", max_filas = 12L)
+  cap_grupos_bio <- paste0(
+    "Desglose por orden taxonómico dentro de Teleostei (OBIS 1993–2020: ",
+    total_spp_bio, " especies únicas en ", format(total_reg_bio, big.mark = ","), " registros)"
+  )
+} else {
+  tabla_grupos_bio <- resumir_taxones_bio(registros_1993_2020, "class", "Grupo Taxonómico (Clase)")
+  cap_grupos_bio <- paste0(
+    "Desglose por clase taxonómica de la comunidad total analizada (1993–2020: ",
+    total_spp_bio, " especies únicas en ", format(total_reg_bio, big.mark = ","), " registros)"
+  )
+}
+
+knitr::kable(tabla_grupos_bio, caption = cap_grupos_bio) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+::: {.callout-tip}
+### Alcance de la comunidad analizada (`projectOBIS` vs. respaldo GBIF)
+- **Con `projectOBIS/cin/obis_teleostei_1990_2025.csv` activo (`1993–2020`):** **`r format(total_reg_bio, big.mark = ",")` registros** y **`r total_spp_bio` especies de `Teleostei`** frente a los `346` registros (`65` spp.) de GBIF solo, aunque restringidos al polígono OBIS (`-98° a -90°`, `-0.5° a 6.5°`).
+- **Grupos históricos excluidos:** los registros pre-1993 y microfósiles (`Globothalamea` en OBIS/GBIF) quedan excluidos al exigir continuidad multianual (`1993–2020`) emparejada con ERSST y Copernicus.
+:::
+
+---
+
+## 2. Evaluación de Hipótesis H1 — Asociación Espacial Diversidad Alfa vs. Ambiente ($0.25^\circ$)
+
+**Hipótesis H1 (`README.md`):** *Parte de la variación espacial de la diversidad alfa registrada se asocia con gradientes de TSM y otras variables oceanográficas, incluso tras considerar cobertura observacional.*
+
+::: {.panel-tabset}
+
+### Correlaciones Espaciales (`corrplot`)
+
+```{r}
+#| label: h1-corrplot-espacial
+#| fig-width: 11
+#| fig-height: 5.5
+
+celdas_h1 <- df_grilla_025 %>%
+  dplyr::filter(n_registros > 0, !is.na(tsm_celda), !is.na(clorofila_celda)) %>%
+  dplyr::mutate(
+    log10_chl = log10(clorofila_celda),
+    log10_esfuerzo = log10(n_registros)
+  )
+
+cols_h1 <- c("tsm_celda", "log10_chl", "log10_esfuerzo", "riqueza_alpha", "shannon_alpha", "simpson_alpha", "beta_jaccard")
+if (tiene_salinidad_esp) cols_h1 <- c(cols_h1, "salinidad_celda")
+
+mat_h1 <- celdas_h1 %>% dplyr::select(dplyr::all_of(cols_h1))
+names(mat_h1) <- dplyr::recode(
+  names(mat_h1),
+  tsm_celda = "TSM_025",
+  log10_chl = "Log10_Chl",
+  log10_esfuerzo = "Log10_Registros",
+  riqueza_alpha = "Riqueza_S",
+  shannon_alpha = "Shannon_H",
+  simpson_alpha = "Simpson_1D",
+  beta_jaccard = "Beta_Jaccard",
+  salinidad_celda = "Salinidad_025"
+)
+
+cor_h1_p <- stats::cor(mat_h1, use = "pairwise.complete.obs", method = "pearson")
+cor_h1_s <- stats::cor(mat_h1, use = "pairwise.complete.obs", method = "spearman")
+
+par(mfrow = c(1, 2))
+corrplot::corrplot(
+  cor_h1_p, method = "color", type = "upper", addCoef.col = "black",
+  number.cex = 0.68, tl.col = "black", tl.srt = 40,
+  title = "H1 Espacial (0.25°): Pearson (r)", mar = c(0, 0, 2.2, 0)
+)
+corrplot::corrplot(
+  cor_h1_s, method = "color", type = "upper", addCoef.col = "black",
+  number.cex = 0.68, tl.col = "black", tl.srt = 40,
+  title = "H1 Espacial (0.25°): Spearman (ρ)", mar = c(0, 0, 2.2, 0)
+)
+```
+
+### Gradientes Espaciales y Efecto de Cobertura
+
+```{r}
+#| label: h1-graficos-espaciales
+#| fig-width: 10.5
+#| fig-height: 7
+
+p_h1_tsm <- ggplot(celdas_h1, aes(x = tsm_celda, y = riqueza_alpha)) +
+  geom_smooth(method = "lm", color = "#d95f02", fill = "#fdd0a2", alpha = 0.35) +
+  geom_point(aes(size = n_registros, color = log10_chl), alpha = 0.85) +
+  scale_color_viridis_c(option = "mako", name = "log10(Chl-a)") +
+  labs(title = "Riqueza Alfa (S) vs. TSM (celdas 0.25°)", x = "TSM media celda (°C)", y = "Riqueza (S)") +
+  theme_minimal(base_size = 10)
+
+p_h1_chl <- ggplot(celdas_h1, aes(x = clorofila_celda, y = shannon_alpha)) +
+  geom_smooth(method = "lm", color = "#1b9e77", fill = "#b2e2e2", alpha = 0.35) +
+  geom_point(aes(size = n_registros, color = tsm_celda), alpha = 0.85) +
+  scale_x_log10() +
+  scale_color_viridis_c(option = "turbo", name = "TSM (°C)") +
+  labs(title = "Shannon (H') vs. Clorofila-a (celdas 0.25°)", x = "Clorofila-a celda (mg/m³, escala log10)", y = "Índice de Shannon (H')") +
+  theme_minimal(base_size = 10)
+
+p_h1_cov <- ggplot(celdas_h1, aes(x = n_registros, y = riqueza_alpha)) +
+  geom_smooth(method = "lm", color = "#7570b3", fill = "#dadaeb", alpha = 0.35) +
+  geom_point(aes(color = tsm_celda), size = 2.6, alpha = 0.85) +
+  scale_x_log10() +
+  scale_color_viridis_c(option = "turbo", name = "TSM (°C)") +
+  labs(title = "Control de sesgo: Riqueza (S) vs. Cobertura observacional", x = "Registros por celda (log10)", y = "Riqueza (S)") +
+  theme_minimal(base_size = 10)
+
+# Modelo lineal múltiple evaluando ambiente + esfuerzo observacional
+if (tiene_salinidad_esp) {
+  p_h1_sal <- ggplot(celdas_h1, aes(x = salinidad_celda, y = riqueza_alpha)) +
+    geom_smooth(method = "lm", color = "#386cb0", fill = "#cbd5e8", alpha = 0.35) +
+    geom_point(aes(size = n_registros, color = tsm_celda), alpha = 0.85) +
+    scale_color_viridis_c(option = "turbo", name = "TSM (°C)") +
+    labs(title = "Riqueza Alfa (S) vs. Salinidad Copernicus (0.25°)", x = "Salinidad celda (PSU)", y = "Riqueza (S)") +
+    theme_minimal(base_size = 10)
+  mod_h1 <- stats::lm(riqueza_alpha ~ tsm_celda + salinidad_celda + log10_chl + log10_esfuerzo, data = celdas_h1)
+  panel_h1_plots <- (p_h1_tsm + p_h1_sal) / (p_h1_chl + p_h1_cov)
+  cap_h1 <- paste0("Modelo lineal H1: Riqueza Alfa ~ TSM + Salinidad + log10(Chl-a) + log10(Cobertura) | R² ajustado = ", round(summary(mod_h1)$adj.r.squared, 3))
+} else {
+  mod_h1 <- stats::lm(riqueza_alpha ~ tsm_celda + log10_chl + log10_esfuerzo, data = celdas_h1)
+  panel_h1_plots <- (p_h1_tsm + p_h1_chl) / p_h1_cov
+  cap_h1 <- paste0("Modelo lineal H1: Riqueza Alfa ~ TSM + log10(Chl-a) + log10(Cobertura) | R² ajustado = ", round(summary(mod_h1)$adj.r.squared, 3))
+}
+
+df_mod_h1 <- as.data.frame(summary(mod_h1)$coefficients)
+df_mod_h1$Predictor <- rownames(df_mod_h1)
+df_mod_h1 <- df_mod_h1 %>%
+  dplyr::select(Predictor, Estimado = Estimate, Error_Std = `Std. Error`, t = `t value`, p_valor = `Pr(>|t|)`) %>%
+  dplyr::mutate(dplyr::across(c(Estimado, Error_Std, t), ~ round(.x, 3)), p_valor = signif(p_valor, 3))
+
+panel_h1_plots +
+  plot_annotation(title = "Evaluación de H1: Gradientes ambientales y sesgo de muestreo a 0.25°")
+
+knitr::kable(df_mod_h1, row.names = FALSE, caption = cap_h1) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+:::
+
+---
+
+## 3. Evaluación de Hipótesis H2 — Diversidad Beta Espacial vs. Distancia Ambiental ($0.25^\circ$)
+
+**Hipótesis H2 (`README.md`):** *Las celdas con condiciones oceanográficas más diferentes presentan mayor disimilitud en composición de especies (diversidad beta espacial).*
+
+```{r}
+#| label: h2-beta-distancia-ambiental
+#| fig-width: 10
+#| fig-height: 5
+
+# Construir tabla de pares únicos entre las celdas activas de 0.25°
+reg_celda_h2 <- registros_1993_2020 %>%
+  dplyr::mutate(
+    lon_025 = round(floor(longitud / 0.25) * 0.25 + 0.125, 3),
+    lat_025 = round(floor(latitud / 0.25) * 0.25 + 0.125, 3),
+    celda_id = paste(lon_025, lat_025, sep = "_")
+  )
+
+celdas_h2 <- celdas_h1 %>%
+  dplyr::mutate(
+    celda_id = paste(lon_025, lat_025, sep = "_"),
+    z_tsm = as.numeric(scale(tsm_celda)),
+    z_chl = as.numeric(scale(log10_chl)),
+    z_sal = if (tiene_salinidad_esp) as.numeric(scale(salinidad_celda)) else 0
+  )
+
+sp_lista_h2 <- split(reg_celda_h2$species, reg_celda_h2$celda_id)
+n_h2 <- nrow(celdas_h2)
+
+pares_idx <- utils::combn(n_h2, 2)
+n_pares <- ncol(pares_idx)
+
+beta_jacc_par <- numeric(n_pares)
+beta_sor_par <- numeric(n_pares)
+dist_amb_par <- numeric(n_pares)
+dist_geo_par <- numeric(n_pares)
+
+for (k in seq_len(n_pares)) {
+  i <- pares_idx[1, k]
+  j <- pares_idx[2, k]
+  id_i <- celdas_h2$celda_id[i]
+  id_j <- celdas_h2$celda_id[j]
+  beta_jacc_par[k] <- jaccard_disim(sp_lista_h2[[id_i]], sp_lista_h2[[id_j]])
+  beta_sor_par[k] <- sorensen_disim(sp_lista_h2[[id_i]], sp_lista_h2[[id_j]])
+  dist_amb_par[k] <- sqrt(
+    (celdas_h2$z_tsm[i] - celdas_h2$z_tsm[j])^2 +
+      (celdas_h2$z_chl[i] - celdas_h2$z_chl[j])^2 +
+      (celdas_h2$z_sal[i] - celdas_h2$z_sal[j])^2
+  )
+  dist_geo_par[k] <- distancia_haversine_km(
+    celdas_h2$lon_025[i], celdas_h2$lat_025[i],
+    celdas_h2$lon_025[j], celdas_h2$lat_025[j]
+  )
+}
+
+df_h2_pares <- tibble::tibble(
+  beta_jaccard = beta_jacc_par,
+  beta_sorensen = beta_sor_par,
+  dist_ambiental = dist_amb_par,
+  dist_geografica_km = dist_geo_par
+)
+
+# Test de correlación tipo Mantel (Spearman con 499 permutaciones de etiquetas de celda)
+set.seed(2026)
+cor_obs_h2 <- stats::cor(df_h2_pares$dist_ambiental, df_h2_pares$beta_jaccard, method = "spearman", use = "complete.obs")
+
+# Construir matriz cuadrada de disimilitud y distancia ambiental para permutación de filas/columnas
+mat_beta <- matrix(0, n_h2, n_h2)
+mat_amb <- matrix(0, n_h2, n_h2)
+for (k in seq_len(n_pares)) {
+  i <- pares_idx[1, k]
+  j <- pares_idx[2, k]
+  mat_beta[i, j] <- mat_beta[j, i] <- beta_jacc_par[k]
+  mat_amb[i, j] <- mat_amb[j, i] <- dist_amb_par[k]
+}
+tri_idx <- upper.tri(mat_beta)
+perm_cors <- replicate(499, {
+  ord <- sample.int(n_h2)
+  stats::cor(mat_amb[tri_idx], mat_beta[ord, ord][tri_idx], method = "spearman", use = "complete.obs")
+})
+p_mantel_h2 <- (sum(perm_cors >= cor_obs_h2) + 1) / 500
+
+p_h2_1 <- ggplot(df_h2_pares, aes(x = dist_ambiental, y = beta_jaccard)) +
+  geom_point(alpha = 0.14, color = "#7570b3", size = 1.2) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 4), color = "#d95f02", linewidth = 1.1) +
+  labs(
+    title = "H2: Recambio de especies (Beta Jaccard) vs. Distancia ambiental",
+    subtitle = paste0(
+      n_pares, " pares de celdas 0.25° | Spearman Mantel ρ = ",
+      round(cor_obs_h2, 3), " (p = ", signif(p_mantel_h2, 3), ")"
+    ),
+    x = ifelse(tiene_salinidad_esp, "Distancia ambiental estandarizada (Δ TSM + Δ Salinidad + Δ log10 Chl-a)", "Distancia ambiental estandarizada (Δ TSM + Δ log10 Chl-a)"),
+    y = "Disimilitud Beta de Jaccard (0–1)"
+  ) +
+  theme_minimal(base_size = 11)
+
+p_h2_2 <- df_h2_pares %>%
+  dplyr::mutate(cuartil_amb = dplyr::ntile(dist_ambiental, 4)) %>%
+  ggplot(aes(x = factor(cuartil_amb, labels = c("Q1 (Muy similar)", "Q2", "Q3", "Q4 (Muy distinto)")), y = beta_jaccard)) +
+  geom_boxplot(fill = "#b3cde3", alpha = 0.85) +
+  labs(
+    title = "Disimilitud Beta por cuartil de diferencia ambiental",
+    x = "Diferencia oceanográfica entre pares de celdas",
+    y = "Beta Jaccard (0–1)"
+  ) +
+  theme_minimal(base_size = 11)
+
+p_h2_1 + p_h2_2
+```
+
+---
+
+## 4. Evaluación de Hipótesis H3 — Variación Interanual (`1993–2020`, `ersst_EC.rds` + Copernicus)
+
+**Hipótesis H3 (`README.md`):** *Cambios interanuales de TSM y Salinidad se asocian con cambios en indicadores de diversidad, considerando las limitaciones de cobertura y comparabilidad observacional entre años.*
+
+::: {.panel-tabset}
+
+### Series Temporales (`1993–2020`)
+
+```{r}
+#| label: h3-series-ersst
+#| fig-width: 10
+#| fig-height: 9
+
+df_anual_obs <- df_anual %>% dplyr::filter(!is.na(riqueza_alpha))
+
+p_h3_tsm <- ggplot(df_anual, aes(x = year, y = tsm_media)) +
+  geom_ribbon(aes(ymin = tsm_media - tsm_sd, ymax = tsm_media + tsm_sd), fill = "#fdd0a2", alpha = 0.45) +
+  geom_line(aes(color = "TSM ERSST (°C)"), linewidth = 1.05) +
+  geom_point(aes(color = "TSM ERSST (°C)"), size = 2) +
+  {if ("tsm_copernicus" %in% names(df_anual)) geom_line(aes(y = tsm_copernicus, color = "TSM Copernicus (°C)"), linewidth = 0.9, linetype = "dashed")} +
+  annotate("rect", xmin = 1997, xmax = 1998.5, ymin = -Inf, ymax = Inf, alpha = 0.12, fill = "#e31a1c") +
+  annotate("rect", xmin = 2015, xmax = 2016.5, ymin = -Inf, ymax = Inf, alpha = 0.12, fill = "#e31a1c") +
+  scale_color_manual(values = c("TSM ERSST (°C)" = "#d95f02", "TSM Copernicus (°C)" = "#b2182b"), name = NULL) +
+  labs(
+    title = "A1. Serie real de TSM promedio del área (NOAA ERSST + Copernicus, 1993–2020)",
+    subtitle = "Banda naranja: ±1 DE espacial | Franjas rojas: El Niño 1997–1998 y 2015–2016",
+    x = NULL, y = "TSM (°C)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+
+p_h3_sal <- if (tiene_salinidad_anual) {
+  ggplot(df_anual, aes(x = year, y = salinidad_media)) +
+    geom_ribbon(aes(ymin = salinidad_media - salinidad_sd, ymax = salinidad_media + salinidad_sd), fill = "#cbd5e8", alpha = 0.45) +
+    geom_line(color = "#386cb0", linewidth = 1.05) +
+    geom_point(color = "#386cb0", size = 2) +
+    annotate("rect", xmin = 1997, xmax = 1998.5, ymin = -Inf, ymax = Inf, alpha = 0.12, fill = "#e31a1c") +
+    annotate("rect", xmin = 2015, xmax = 2016.5, ymin = -Inf, ymax = Inf, alpha = 0.12, fill = "#e31a1c") +
+    labs(title = "A2. Serie real de Salinidad Superficial del Mar (Copernicus Marine, 1993–2020)", x = NULL, y = "Salinidad (PSU)") +
+    theme_minimal(base_size = 11)
+} else NULL
+
+p_h3_alpha <- ggplot(df_anual_obs, aes(x = year)) +
+  geom_col(aes(y = riqueza_alpha), fill = "#2b5c8f", alpha = 0.85, width = 0.65) +
+  geom_line(aes(y = shannon_alpha * 10, group = 1), color = "#1b9e77", linewidth = 1) +
+  geom_point(aes(y = shannon_alpha * 10), color = "#1b9e77", size = 2.3) +
+  scale_y_continuous(
+    name = "Riqueza Alfa (S)",
+    sec.axis = sec_axis(~ . / 10, name = "Índice de Shannon (H')")
+  ) +
+  scale_x_continuous(limits = c(1993, 2020), breaks = seq(1993, 2020, by = 3)) +
+  labs(
+    title = "B. Diversidad Alfa anual (barras: Riqueza S | línea verde: Shannon H')",
+    x = NULL
+  ) +
+  theme_minimal(base_size = 11)
+
+p_h3_beta <- ggplot(df_anual_obs, aes(x = year)) +
+  geom_line(aes(y = beta_jaccard, color = "Beta Jaccard (vs. pool)"), linewidth = 1) +
+  geom_point(aes(y = beta_jaccard, color = "Beta Jaccard (vs. pool)"), size = 2.3) +
+  geom_line(aes(y = beta_sorensen, color = "Beta Sørensen (vs. pool)"), linewidth = 0.9, linetype = "dashed") +
+  scale_color_manual(
+    values = c("Beta Jaccard (vs. pool)" = "#7570b3", "Beta Sørensen (vs. pool)" = "#e7298a"),
+    name = "Métrica Beta"
+  ) +
+  scale_x_continuous(limits = c(1993, 2020), breaks = seq(1993, 2020, by = 3)) +
+  labs(
+    title = "C. Diversidad Beta interanual (disimilitud de composición por año)",
+    x = "Año", y = "Disimilitud Beta (0–1)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+
+if (!is.null(p_h3_sal)) {
+  (p_h3_tsm / p_h3_sal / p_h3_alpha / p_h3_beta)
+} else {
+  (p_h3_tsm / p_h3_alpha / p_h3_beta)
+}
+```
+
+### Correlación Interanual (`corrplot` y Dispersión)
+
+```{r}
+#| label: h3-correlacion-interanual
+#| fig-width: 10.5
+#| fig-height: 5.2
+
+cols_h3 <- c("tsm_media", "tsm_anomalia", "n_registros", "riqueza_alpha", "shannon_alpha", "simpson_alpha", "beta_jaccard")
+if (tiene_salinidad_anual) cols_h3 <- c(cols_h3, "salinidad_media", "tsm_copernicus")
+
+mat_h3 <- df_anual_obs %>% dplyr::select(dplyr::any_of(cols_h3))
+names(mat_h3) <- dplyr::recode(
+  names(mat_h3),
+  tsm_media = "TSM_ERSST",
+  tsm_anomalia = "Anomalia_TSM",
+  tsm_copernicus = "TSM_Copernicus",
+  salinidad_media = "Salinidad_PSU",
+  n_registros = "Registros_Anio",
+  riqueza_alpha = "Riqueza_S",
+  shannon_alpha = "Shannon_H",
+  simpson_alpha = "Simpson_1D",
+  beta_jaccard = "Beta_Jaccard"
+)
+
+par(mfrow = c(1, 2))
+corrplot::corrplot(
+  stats::cor(mat_h3, use = "pairwise.complete.obs", method = "pearson"),
+  method = "color", type = "upper", addCoef.col = "black",
+  number.cex = 0.65, tl.col = "black", tl.srt = 40,
+  title = "H3 Interanual: Pearson (r)", mar = c(0, 0, 2.2, 0)
+)
+corrplot::corrplot(
+  stats::cor(mat_h3, use = "pairwise.complete.obs", method = "spearman"),
+  method = "color", type = "upper", addCoef.col = "black",
+  number.cex = 0.65, tl.col = "black", tl.srt = 40,
+  title = "H3 Interanual: Spearman (ρ)", mar = c(0, 0, 2.2, 0)
+)
+```
+
+```{r}
+#| label: h3-dispersion-anio
+#| fig-width: 10
+#| fig-height: 7
+
+g_h3_a <- ggplot(df_anual_obs, aes(x = tsm_media, y = riqueza_alpha)) +
+  geom_smooth(method = "lm", color = "#d95f02", fill = "#fdd0a2", alpha = 0.35) +
+  geom_point(aes(size = n_registros), color = "#2b5c8f", alpha = 0.85) +
+  geom_text(aes(label = year), vjust = -0.8, size = 3, check_overlap = TRUE) +
+  labs(title = "Riqueza Alfa (S) = f(TSM ERSST)", x = "TSM promedio anual (°C)", y = "Riqueza (S)") +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "none")
+
+g_h3_b <- ggplot(df_anual_obs, aes(x = tsm_media, y = beta_jaccard)) +
+  geom_smooth(method = "lm", color = "#7570b3", fill = "#dadaeb", alpha = 0.35) +
+  geom_point(aes(size = n_registros), color = "#7570b3", alpha = 0.85) +
+  geom_text(aes(label = year), vjust = -0.8, size = 3, check_overlap = TRUE) +
+  labs(title = "Diversidad Beta (Jaccard) = f(TSM ERSST)", x = "TSM promedio anual (°C)", y = "Beta Jaccard (0–1)") +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "none")
+
+if (tiene_salinidad_anual) {
+  g_h3_c <- ggplot(df_anual_obs, aes(x = salinidad_media, y = riqueza_alpha)) +
+    geom_smooth(method = "lm", color = "#386cb0", fill = "#cbd5e8", alpha = 0.35) +
+    geom_point(aes(size = n_registros), color = "#386cb0", alpha = 0.85) +
+    geom_text(aes(label = year), vjust = -0.8, size = 3, check_overlap = TRUE) +
+    labs(title = "Riqueza Alfa (S) = f(Salinidad Copernicus)", x = "Salinidad promedio anual (PSU)", y = "Riqueza (S)") +
+    theme_minimal(base_size = 10) +
+    theme(legend.position = "none")
+
+  g_h3_d <- ggplot(df_anual_obs, aes(x = salinidad_media, y = beta_jaccard)) +
+    geom_smooth(method = "lm", color = "#1b9e77", fill = "#b2e2e2", alpha = 0.35) +
+    geom_point(aes(size = n_registros), color = "#1b9e77", alpha = 0.85) +
+    geom_text(aes(label = year), vjust = -0.8, size = 3, check_overlap = TRUE) +
+    labs(title = "Diversidad Beta (Jaccard) = f(Salinidad Copernicus)", x = "Salinidad promedio anual (PSU)", y = "Beta Jaccard (0–1)") +
+    theme_minimal(base_size = 10) +
+    theme(legend.position = "none")
+
+  (g_h3_a + g_h3_b) / (g_h3_c + g_h3_d)
+} else {
+  g_h3_a + g_h3_b
+}
+```
+
+### Tabla Anual Integrada (`1993–2020`)
+
+```{r}
+#| label: h3-tabla-anual
+
+tabla_h3 <- df_anual_obs %>%
+  dplyr::select(
+    Año = year,
+    `TSM ERSST (°C)` = tsm_media,
+    dplyr::any_of(c(`TSM Cop. (°C)` = "tsm_copernicus", `Salinidad (PSU)` = "salinidad_media")),
+    `Anomalía TSM (°C)` = tsm_anomalia,
+    Registros = n_registros,
+    `Riqueza (S)` = riqueza_alpha,
+    `Shannon (H')` = shannon_alpha,
+    `Simpson (1-D)` = simpson_alpha,
+    `Beta Jaccard` = beta_jaccard,
+    `Beta Sørensen` = beta_sorensen
+  )
+
+knitr::kable(tabla_h3, caption = "Serie anual observada (1993–2020): TSM (ERSST/Copernicus), Salinidad (Copernicus) y diversidad") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+### Serie Mensual Copernicus (`336` meses, `1993–2020`) y Ciclo Estacional
+
+La serie mensual completa de **336 meses** (`1993-01` a `2020-12`, profundidad superficial `0.494 m`) exportada por `descarga_temperatura_copernicus_arojasar.R` hacia `data/copernicus_tsm_salinidad_mensual_1993_2020.csv` captura la variabilidad intra-anual del corredor marino (ciclo estacional y pulsos ENSO) que queda suavizada en los promedios anuales.
+
+```{r}
+#| label: h3-mensual-copernicus
+#| fig-width: 11
+#| fig-height: 7
+
+if (!is.null(df_cop_mensual) && nrow(df_cop_mensual) > 0) {
+  meses_abrev <- c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")
+
+  ciclo_estacional <- df_cop_mensual %>%
+    dplyr::group_by(month) %>%
+    dplyr::summarise(
+      tsm_prom = round(mean(tsm_copernicus, na.rm = TRUE), 3),
+      tsm_sd_inter = round(stats::sd(tsm_copernicus, na.rm = TRUE), 3),
+      tsm_min_hist = round(min(tsm_min, na.rm = TRUE), 3),
+      tsm_max_hist = round(max(tsm_max, na.rm = TRUE), 3),
+      sal_prom = round(mean(salinidad_media, na.rm = TRUE), 3),
+      sal_sd_inter = round(stats::sd(salinidad_media, na.rm = TRUE), 3),
+      sal_min_hist = round(min(salinidad_min, na.rm = TRUE), 3),
+      sal_max_hist = round(max(salinidad_max, na.rm = TRUE), 3),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(mes = factor(meses_abrev[month], levels = meses_abrev))
+
+  p_m_tsm <- ggplot(df_cop_mensual, aes(x = fecha, y = tsm_copernicus)) +
+    geom_ribbon(aes(ymin = tsm_copernicus - tsm_sd_copernicus, ymax = tsm_copernicus + tsm_sd_copernicus),
+                fill = "#ef8a62", alpha = 0.25) +
+    geom_line(color = "#b2182b", linewidth = 0.55) +
+    labs(
+      title = "Serie Mensual TSM Copernicus (336 meses, 1993–2020)",
+      subtitle = "Media del corredor ± 1 DE espacial mensual",
+      x = NULL, y = "TSM (°C)"
+    ) +
+    theme_minimal(base_size = 10)
+
+  p_m_sal <- ggplot(df_cop_mensual, aes(x = fecha, y = salinidad_media)) +
+    geom_ribbon(aes(ymin = salinidad_media - salinidad_sd, ymax = salinidad_media + salinidad_sd),
+                fill = "#67a9cf", alpha = 0.25) +
+    geom_line(color = "#2166ac", linewidth = 0.55) +
+    labs(
+      title = "Serie Mensual Salinidad Superficial Copernicus (336 meses, 1993–2020)",
+      subtitle = "Media del corredor ± 1 DE espacial mensual",
+      x = "Fecha", y = "Salinidad (PSU)"
+    ) +
+    theme_minimal(base_size = 10)
+
+  p_c_tsm <- ggplot(ciclo_estacional, aes(x = month, y = tsm_prom)) +
+    geom_ribbon(aes(ymin = tsm_prom - tsm_sd_inter, ymax = tsm_prom + tsm_sd_inter),
+                fill = "#ef8a62", alpha = 0.25) +
+    geom_line(color = "#b2182b", linewidth = 0.9) +
+    geom_point(color = "#b2182b", size = 2) +
+    scale_x_continuous(breaks = 1:12, labels = meses_abrev) +
+    labs(
+      title = "Ciclo Estacional TSM (1993–2020)",
+      subtitle = "Promedio climatológico ± 1 DE interanual",
+      x = NULL, y = "TSM (°C)"
+    ) +
+    theme_minimal(base_size = 10)
+
+  p_c_sal <- ggplot(ciclo_estacional, aes(x = month, y = sal_prom)) +
+    geom_ribbon(aes(ymin = sal_prom - sal_sd_inter, ymax = sal_prom + sal_sd_inter),
+                fill = "#67a9cf", alpha = 0.25) +
+    geom_line(color = "#2166ac", linewidth = 0.9) +
+    geom_point(color = "#2166ac", size = 2) +
+    scale_x_continuous(breaks = 1:12, labels = meses_abrev) +
+    labs(
+      title = "Ciclo Estacional Salinidad (1993–2020)",
+      subtitle = "Promedio climatológico ± 1 DE interanual",
+      x = "Mes", y = "Salinidad (PSU)"
+    ) +
+    theme_minimal(base_size = 10)
+
+  patchwork::wrap_plots(p_m_tsm, p_c_tsm, p_m_sal, p_c_sal, ncol = 2, widths = c(1.6, 1))
+}
+```
+
+```{r}
+#| label: h3-mensual-copernicus-tabla
+
+if (!is.null(df_cop_mensual) && nrow(df_cop_mensual) > 0) {
+  tabla_ciclo <- ciclo_estacional %>%
+    dplyr::select(
+      Mes = mes,
+      `TSM Media (°C)` = tsm_prom,
+      `TSM DE Interanual` = tsm_sd_inter,
+      `TSM Mín Hist. (°C)` = tsm_min_hist,
+      `TSM Máx Hist. (°C)` = tsm_max_hist,
+      `Salinidad Media (PSU)` = sal_prom,
+      `Sal. DE Interanual` = sal_sd_inter,
+      `Sal. Mín Hist. (PSU)` = sal_min_hist,
+      `Sal. Máx Hist. (PSU)` = sal_max_hist
+    )
+
+  knitr::kable(
+    tabla_ciclo,
+    caption = paste0(
+      "Climatología estacional Copernicus (Ene–Dic, sintetizada a partir de ",
+      nrow(df_cop_mensual),
+      " meses completos en data/copernicus_tsm_salinidad_mensual_1993_2020.csv)"
+    )
+  ) %>%
+    kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+}
+```
+
+```{r}
+#| label: h3-mensual-copernicus-muestra
+
+if (!is.null(df_cop_mensual) && nrow(df_cop_mensual) > 0) {
+  muestra_mensual <- utils::head(df_cop_mensual, 12) %>%
+    dplyr::select(
+      Fecha = fecha,
+      Año = year,
+      Mes = month,
+      `TSM Media (°C)` = tsm_copernicus,
+      `TSM DE` = tsm_sd_copernicus,
+      `TSM Mín` = tsm_min,
+      `TSM Máx` = tsm_max,
+      `Sal. Media (PSU)` = salinidad_media,
+      `Sal. DE` = salinidad_sd,
+      `Sal. Mín` = salinidad_min,
+      `Sal. Máx` = salinidad_max
+    )
+
+  knitr::kable(
+    muestra_mensual,
+    caption = paste0(
+      "Vista previa de los primeros 12 registros de la tabla mensual (total: ",
+      nrow(df_cop_mensual),
+      " filas en data/copernicus_tsm_salinidad_mensual_1993_2020.csv)"
+    )
+  ) %>%
+    kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+}
+```
+
+:::
+
+---
+
+## 5. Mapas Interactivos por Variable y Selección de Año (`leaflet` a $0.25^\circ$)
+
+Cada pestaña muestra **una sola variable con su propia leyenda clara y fija**, manteniendo intacto el mapa interactivo `leaflet` (zoom, desplazamiento y popups al hacer clic en cada celda o punto). En el menú superior derecho de cada mapa puedes elegir qué **año (`1998–2020`) o `Todos (1993–2020)`** visualizar.
+
+```{r}
+#| label: funcion-mapa-025
+
+# Función reutilizable en R puro para construir mapas interactivos de 0.25° con selector de año
+crear_mapa_025 <- function(datos_celdas, valores, titulo_leyenda, paleta_col,
+                           grupo_grilla, registros_df, popup_celdas,
+                           borde_celda = TRUE, opacidad_celda = 0.78,
+                           dominio = range(valores, na.rm = TRUE)) {
+  pal <- leaflet::colorNumeric(
+    palette = paleta_col,
+    domain = dominio,
+    reverse = (paleta_col %in% c("RdYlBu", "RdBu"))
+  )
+  anios_disp <- sort(unique(registros_df$year))
+  grupos_anio <- c("Todos (1993–2020)", paste0("Año ", anios_disp))
+
+  m <- leaflet::leaflet(width = "100%", height = 540) %>%
+    leaflet::addProviderTiles(leaflet::providers$Esri.OceanBasemap) %>%
+    leaflet::setView(lng = -92.5, lat = 2.0, zoom = 6) %>%
+    leaflet::addRectangles(
+      data = datos_celdas,
+      lng1 = ~lon_025 - 0.125, lng2 = ~lon_025 + 0.125,
+      lat1 = ~lat_025 - 0.125, lat2 = ~lat_025 + 0.125,
+      stroke = borde_celda, color = "#ffffff", weight = 0.7,
+      fillColor = pal(valores), fillOpacity = opacidad_celda,
+      group = grupo_grilla,
+      popup = popup_celdas
+    )
+
+  if (nrow(registros_df) > 1000L) {
+    # [APORTE arojasar - OPTIMIZACIÓN LEAFLET] Agrega marcadores por centroide 0.25° y celda-año
+    # cuando se conectan bases densas (>1000 registros como OBIS Teleostei) para mantener liviano el HTML.
+    reg_c <- registros_df %>%
+      dplyr::mutate(
+        lon_c = round(floor(longitud / 0.25) * 0.25 + 0.125, 3),
+        lat_c = round(floor(latitud / 0.25) * 0.25 + 0.125, 3)
+      )
+    pts_todos <- reg_c %>%
+      dplyr::group_by(lon_c, lat_c) %>%
+      dplyr::summarise(
+        n_reg = dplyr::n(),
+        n_spp = dplyr::n_distinct(species),
+        ejemplos = paste(utils::head(unique(species), 4), collapse = ", "),
+        .groups = "drop"
+      )
+    pts_anual <- reg_c %>%
+      dplyr::group_by(year, lon_c, lat_c) %>%
+      dplyr::summarise(
+        n_reg = dplyr::n(),
+        n_spp = dplyr::n_distinct(species),
+        ejemplos = paste(utils::head(unique(species), 4), collapse = ", "),
+        .groups = "drop"
+      )
+
+    m <- m %>%
+      leaflet::addCircleMarkers(
+        data = pts_todos,
+        lng = ~lon_c, lat = ~lat_c,
+        radius = ~pmin(9, 3 + log10(n_reg) * 1.8),
+        color = "#e7298a", fillOpacity = 0.78, stroke = FALSE,
+        group = "Todos (1993–2020)",
+        popup = ~paste0(
+          "<b>Celda 0.25°:</b> (", lon_c, "°, ", lat_c, "°)<br>",
+          "<b>Registros 1993–2020:</b> ", n_reg, " | <b>Especies:</b> ", n_spp, "<br>",
+          "<b>Ejemplos:</b> <i>", ejemplos, "</i>"
+        )
+      )
+
+    for (yr in anios_disp) {
+      sub_yr <- dplyr::filter(pts_anual, year == yr)
+      m <- m %>%
+        leaflet::addCircleMarkers(
+          data = sub_yr,
+          lng = ~lon_c, lat = ~lat_c,
+          radius = ~pmin(9, 3.5 + log10(n_reg) * 1.8),
+          color = "#ffffff", weight = 1,
+          fillColor = "#e7298a", fillOpacity = 0.90,
+          group = paste0("Año ", yr),
+          popup = ~paste0(
+            "<b>Año ", year, "</b> (", lon_c, "°, ", lat_c, "°)<br>",
+            "<b>Registros año:</b> ", n_reg, " | <b>Especies:</b> ", n_spp, "<br>",
+            "<b>Ejemplos:</b> <i>", ejemplos, "</i>"
+          )
+        )
+    }
+  } else {
+    m <- m %>%
+      leaflet::addCircleMarkers(
+        data = registros_df,
+        lng = ~longitud, lat = ~latitud,
+        radius = 3.5, color = "#e7298a", fillOpacity = 0.78, stroke = FALSE,
+        group = "Todos (1993–2020)",
+        popup = ~paste0(
+          "<b>Especie:</b> <i>", species, "</i><br>",
+          "<b>Clase:</b> ", class, "<br>",
+          "<b>Año:</b> ", year
+        )
+      )
+
+    for (yr in anios_disp) {
+      sub_yr <- dplyr::filter(registros_df, year == yr)
+      m <- m %>%
+        leaflet::addCircleMarkers(
+          data = sub_yr,
+          lng = ~longitud, lat = ~latitud,
+          radius = 4.5, color = "#ffffff", weight = 1,
+          fillColor = "#e7298a", fillOpacity = 0.90,
+          group = paste0("Año ", yr),
+          popup = ~paste0(
+            "<b>Especie:</b> <i>", species, "</i><br>",
+            "<b>Clase:</b> ", class, "<br>",
+            "<b>Año:</b> ", year
+          )
+        )
+    }
+  }
+
+  m %>%
+    leaflet::addLegend(
+      position = "bottomright",
+      pal = pal,
+      values = valores,
+      title = titulo_leyenda,
+      opacity = 0.88
+    ) %>%
+    leaflet::addLayersControl(
+      baseGroups = grupos_anio,
+      overlayGroups = grupo_grilla,
+      options = leaflet::layersControlOptions(collapsed = FALSE)
+    )
+}
+
+celdas_bio <- df_grilla_025 %>% dplyr::filter(n_registros > 0)
+
+popup_bio <- paste0(
+  "<b>Celda 0.25° × 0.25°</b> (", celdas_bio$lon_025, "°, ", celdas_bio$lat_025, "°)<br>",
+  "<b>Registros (1993–2020):</b> ", celdas_bio$n_registros, "<br>",
+  "<b>Riqueza Alfa (S):</b> ", celdas_bio$riqueza_alpha, " especies<br>",
+  "<b>Shannon (H'):</b> ", celdas_bio$shannon_alpha, " | <b>Simpson (1-D):</b> ", celdas_bio$simpson_alpha, "<br>",
+  "<b>Beta Jaccard espacial:</b> ", celdas_bio$beta_jaccard, "<br>",
+  "<b>TSM / Chl-a:</b> ", round(celdas_bio$tsm_celda, 2), " °C | ", round(celdas_bio$clorofila_celda, 3), " mg/m³<br>",
+  if (tiene_salinidad_esp) paste0("<b>Salinidad Copernicus:</b> ", round(celdas_bio$salinidad_celda, 2), " PSU<br>") else "",
+  "<b>Años:</b> ", celdas_bio$anios_activos, "<br>",
+  if ("clases_lista" %in% names(celdas_bio)) paste0("<b>Grupos taxonómicos (Clase):</b> ", celdas_bio$clases_lista, "<br>") else "",
+  "<b>Especies:</b> <i>", celdas_bio$especies_lista, "</i>"
+)
+
+popup_amb <- paste0(
+  "<b>Celda ambiental 0.25°</b> (", df_grilla_025$lon_025, "°, ", df_grilla_025$lat_025, "°)<br>",
+  "<b>TSM Bio-ORACLE:</b> ", round(df_grilla_025$tsm_celda, 2), " °C<br>",
+  "<b>Clorofila-a Bio-ORACLE:</b> ", round(df_grilla_025$clorofila_celda, 3), " mg/m³",
+  if (tiene_salinidad_esp) paste0("<br><b>Salinidad Copernicus:</b> ", round(df_grilla_025$salinidad_celda, 2), " PSU") else ""
+)
+```
+
+::: {.panel-tabset}
+
+### 5.1 Diversidad Alfa: Riqueza ($S$)
+
+```{r}
+#| label: mapa-alfa-riqueza
+
+crear_mapa_025(
+  datos_celdas = celdas_bio,
+  valores = celdas_bio$riqueza_alpha,
+  titulo_leyenda = "Riqueza Alfa (S spp.)",
+  paleta_col = "YlGnBu",
+  grupo_grilla = "Celdas 0.25°: Riqueza (S)",
+  registros_df = registros_1993_2020,
+  popup_celdas = popup_bio
+)
+```
+
+### 5.2 Diversidad Beta: Jaccard
+
+```{r}
+#| label: mapa-beta-jaccard
+
+crear_mapa_025(
+  datos_celdas = celdas_bio,
+  valores = celdas_bio$beta_jaccard,
+  titulo_leyenda = "Beta Jaccard (0–1)",
+  paleta_col = "magma",
+  grupo_grilla = "Celdas 0.25°: Beta Jaccard",
+  registros_df = registros_1993_2020,
+  popup_celdas = popup_bio
+)
+```
+
+### 5.3 Ambiente: TSM ($0.25^\circ$)
+
+```{r}
+#| label: mapa-tsm-025
+
+crear_mapa_025(
+  datos_celdas = df_grilla_025,
+  valores = df_grilla_025$tsm_celda,
+  titulo_leyenda = "TSM 0.25° (°C)",
+  paleta_col = "RdYlBu",
+  grupo_grilla = "Grilla 0.25°: TSM (°C)",
+  registros_df = registros_1993_2020,
+  popup_celdas = popup_amb,
+  borde_celda = FALSE,
+  opacidad_celda = 0.55
+)
+```
+
+### 5.4 Ambiente: Clorofila-*a* ($0.25^\circ$)
+
+```{r}
+#| label: mapa-chl-025
+
+crear_mapa_025(
+  datos_celdas = df_grilla_025,
+  valores = log10(df_grilla_025$clorofila_celda),
+  titulo_leyenda = "log10(Chl-a mg/m³)",
+  paleta_col = "YlGn",
+  grupo_grilla = "Grilla 0.25°: Clorofila-a",
+  registros_df = registros_1993_2020,
+  popup_celdas = popup_amb,
+  borde_celda = FALSE,
+  opacidad_celda = 0.55
+)
+```
+
+### 5.5 Ambiente: Salinidad Copernicus ($0.25^\circ$)
+
+```{r}
+#| label: mapa-salinidad-025
+
+if (tiene_salinidad_esp) {
+  df_sal_valid <- dplyr::filter(df_grilla_025, !is.na(salinidad_celda))
+  popup_sal <- paste0(
+    "<b>Celda Copernicus 0.25°</b> (", df_sal_valid$lon_025, "°, ", df_sal_valid$lat_025, "°)<br>",
+    "<b>Salinidad (1993–2020):</b> ", round(df_sal_valid$salinidad_celda, 2), " PSU<br>",
+    "<b>TSM Copernicus:</b> ", round(df_sal_valid$tsm_copernicus_025, 2), " °C"
+  )
+  crear_mapa_025(
+    datos_celdas = df_sal_valid,
+    valores = df_sal_valid$salinidad_celda,
+    titulo_leyenda = "Salinidad (PSU)",
+    paleta_col = "PuBuGn",
+    grupo_grilla = "Grilla 0.25°: Salinidad (PSU)",
+    registros_df = registros_1993_2020,
+    popup_celdas = popup_sal,
+    borde_celda = FALSE,
+    opacidad_celda = 0.58
+  )
+} else {
+  cat("Ejecuta descarga_temperatura_copernicus_arojasar.R para generar la capa de Salinidad 0.25°.")
+}
+```
+
+### 5.6 Anomalía de TSM ($0.25^\circ$)
+
+```{r}
+#| label: mapa-anomalia-tsm-025
+
+if (!is.null(df_cop_025) && "anom_espacial_tsm" %in% names(df_cop_025)) {
+  df_anom_tsm <- df_cop_025 %>%
+    dplyr::filter(!is.na(anom_espacial_tsm)) %>%
+    dplyr::mutate(
+      grado_tsm = dplyr::case_when(
+        anom_espacial_tsm < -1.0 ~ "Negativa fuerte (< -1.0 °C)",
+        anom_espacial_tsm < 0 ~ "Negativa moderada (-1.0 a 0 °C)",
+        anom_espacial_tsm <= 1.0 ~ "Positiva moderada (0 a +1.0 °C)",
+        TRUE ~ "Positiva fuerte (> +1.0 °C)"
+      )
+    )
+
+  media_tsm_corr <- round(mean(df_anom_tsm$tsm_copernicus_025, na.rm = TRUE), 2)
+  max_abs_tsm <- max(abs(df_anom_tsm$anom_espacial_tsm), na.rm = TRUE)
+
+  popup_anom_tsm <- paste0(
+    "<b>Celda Copernicus 0.25°</b> (", df_anom_tsm$lon_025, "°, ", df_anom_tsm$lat_025, "°)<br>",
+    "<b>TSM media (1993–2020):</b> ", round(df_anom_tsm$tsm_copernicus_025, 2), " °C (media corredor: ", media_tsm_corr, " °C)<br>",
+    "<b>Anomalía espacial:</b> ", sprintf("%+.3f", df_anom_tsm$anom_espacial_tsm), " °C<br>",
+    "<b>Grado:</b> ", df_anom_tsm$grado_tsm, "<br>",
+    "<b>Cambio temporal (2007–2020 vs. 1993–2006):</b> ", sprintf("%+.3f", df_anom_tsm$delta_temporal_tsm), " °C"
+  )
+
+  crear_mapa_025(
+    datos_celdas = df_anom_tsm,
+    valores = df_anom_tsm$anom_espacial_tsm,
+    titulo_leyenda = "Anomalía TSM (°C)",
+    paleta_col = "RdBu",
+    grupo_grilla = "Anomalía TSM 0.25° (°C)",
+    registros_df = registros_1993_2020,
+    popup_celdas = popup_anom_tsm,
+    borde_celda = FALSE,
+    opacidad_celda = 0.65,
+    dominio = c(-max_abs_tsm, max_abs_tsm)
+  )
+} else {
+  cat("Ejecuta descarga_temperatura_copernicus_arojasar.R para generar las anomalías de TSM a 0.25°.")
+}
+```
+
+### 5.7 Anomalía de Salinidad ($0.25^\circ$)
+
+```{r}
+#| label: mapa-anomalia-sal-025
+
+if (!is.null(df_cop_025) && "anom_espacial_sal" %in% names(df_cop_025)) {
+  df_anom_sal <- df_cop_025 %>%
+    dplyr::filter(!is.na(anom_espacial_sal)) %>%
+    dplyr::mutate(
+      grado_sal = dplyr::case_when(
+        anom_espacial_sal < -0.5 ~ "Negativa fuerte (< -0.5 PSU)",
+        anom_espacial_sal < 0 ~ "Negativa moderada (-0.5 a 0 PSU)",
+        anom_espacial_sal <= 0.5 ~ "Positiva moderada (0 a +0.5 PSU)",
+        TRUE ~ "Positiva fuerte (> +0.5 PSU)"
+      )
+    )
+
+  media_sal_corr <- round(mean(df_anom_sal$salinidad_celda, na.rm = TRUE), 2)
+  max_abs_sal <- max(abs(df_anom_sal$anom_espacial_sal), na.rm = TRUE)
+
+  popup_anom_sal <- paste0(
+    "<b>Celda Copernicus 0.25°</b> (", df_anom_sal$lon_025, "°, ", df_anom_sal$lat_025, "°)<br>",
+    "<b>Salinidad media (1993–2020):</b> ", round(df_anom_sal$salinidad_celda, 2), " PSU (media corredor: ", media_sal_corr, " PSU)<br>",
+    "<b>Anomalía espacial:</b> ", sprintf("%+.3f", df_anom_sal$anom_espacial_sal), " PSU<br>",
+    "<b>Grado:</b> ", df_anom_sal$grado_sal, "<br>",
+    "<b>Cambio temporal (2007–2020 vs. 1993–2006):</b> ", sprintf("%+.3f", df_anom_sal$delta_temporal_sal), " PSU"
+  )
+
+  crear_mapa_025(
+    datos_celdas = df_anom_sal,
+    valores = df_anom_sal$anom_espacial_sal,
+    titulo_leyenda = "Anomalía Salinidad (PSU)",
+    paleta_col = "RdBu",
+    grupo_grilla = "Anomalía Salinidad 0.25° (PSU)",
+    registros_df = registros_1993_2020,
+    popup_celdas = popup_anom_sal,
+    borde_celda = FALSE,
+    opacidad_celda = 0.65,
+    dominio = c(-max_abs_sal, max_abs_sal)
+  )
+} else {
+  cat("Ejecuta descarga_temperatura_copernicus_arojasar.R para generar las anomalías de Salinidad a 0.25°.")
+}
+```
+
+### 5.8 Zonificación y Grado de Anomalías (+/-)
+
+```{r}
+#| label: tabla-zonificacion-anomalias
+
+if (!is.null(df_cop_025) && all(c("anom_espacial_tsm", "anom_espacial_sal", "delta_temporal_tsm", "delta_temporal_sal") %in% names(df_cop_025))) {
+  resumir_regimen <- function(df, col_valor, col_grupo, variable_lbl, unidad) {
+    n_tot <- nrow(df)
+    df %>%
+      dplyr::group_by(grado = .data[[col_grupo]]) %>%
+      dplyr::summarise(
+        celdas = dplyr::n(),
+        pct = round(100 * celdas / n_tot, 1),
+        media_val = sprintf("%+.3f %s", mean(.data[[col_valor]], na.rm = TRUE), unidad),
+        rango_val = sprintf("%+.3f a %+.3f %s", min(.data[[col_valor]], na.rm = TRUE), max(.data[[col_valor]], na.rm = TRUE), unidad),
+        lat_res = sprintf("%.2f° (%.2f° a %.2f°)", mean(lat_025, na.rm = TRUE), min(lat_025, na.rm = TRUE), max(lat_025, na.rm = TRUE)),
+        lon_res = sprintf("%.2f°", mean(lon_025, na.rm = TRUE)),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        variable = variable_lbl,
+        grado = as.character(grado)
+      ) %>%
+      dplyr::select(
+        `Variable y Enfoque` = variable,
+        `Grado de Variación` = grado,
+        `Celdas (n)` = celdas,
+        `% Corredor` = pct,
+        `Media del Grupo` = media_val,
+        `Rango [Mín a Máx]` = rango_val,
+        `Latitud Media (Rango)` = lat_res,
+        `Longitud Media` = lon_res
+      )
+  }
+
+  niveles_tsm <- c(
+    "Positiva fuerte (> +1.0 °C)",
+    "Positiva moderada (0 a +1.0 °C)",
+    "Negativa moderada (-1.0 a 0 °C)",
+    "Negativa fuerte (< -1.0 °C)"
+  )
+  niveles_sal <- c(
+    "Positiva fuerte (> +0.5 PSU)",
+    "Positiva moderada (0 a +0.5 PSU)",
+    "Negativa moderada (-0.5 a 0 PSU)",
+    "Negativa fuerte (< -0.5 PSU)"
+  )
+
+  df_zonas <- df_cop_025 %>%
+    dplyr::mutate(
+      g_anom_tsm = factor(dplyr::case_when(
+        anom_espacial_tsm < -1.0 ~ niveles_tsm[4],
+        anom_espacial_tsm < 0 ~ niveles_tsm[3],
+        anom_espacial_tsm <= 1.0 ~ niveles_tsm[2],
+        TRUE ~ niveles_tsm[1]
+      ), levels = niveles_tsm),
+      g_anom_sal = factor(dplyr::case_when(
+        anom_espacial_sal < -0.5 ~ niveles_sal[4],
+        anom_espacial_sal < 0 ~ niveles_sal[3],
+        anom_espacial_sal <= 0.5 ~ niveles_sal[2],
+        TRUE ~ niveles_sal[1]
+      ), levels = niveles_sal),
+      g_dt_tsm = dplyr::if_else(delta_temporal_tsm > 0, "Positiva (> 0 °C, calentamiento)", "Negativa (< 0 °C, enfriamiento)"),
+      g_dt_sal = dplyr::if_else(delta_temporal_sal > 0, "Positiva (> 0 PSU, salinización)", "Negativa (< 0 PSU, dilución)")
+    )
+
+  tabla_anom_total <- dplyr::bind_rows(
+    resumir_regimen(df_zonas, "anom_espacial_tsm", "g_anom_tsm", "TSM — Anomalía espacial (vs. media)", "°C"),
+    resumir_regimen(df_zonas, "anom_espacial_sal", "g_anom_sal", "Salinidad — Anomalía espacial (vs. media)", "PSU"),
+    resumir_regimen(df_zonas, "delta_temporal_tsm", "g_dt_tsm", "TSM — Cambio temporal (2007–2020 vs. 1993–2006)", "°C"),
+    resumir_regimen(df_zonas, "delta_temporal_sal", "g_dt_sal", "Salinidad — Cambio temporal (2007–2020 vs. 1993–2006)", "PSU")
+  )
+
+  knitr::kable(
+    tabla_anom_total,
+    caption = paste0(
+      "Zonificación cuantitativa de anomalías espaciales y variación temporal en la grilla Copernicus 0.25° (",
+      nrow(df_zonas), " celdas, 1993–2020)"
+    )
+  ) %>%
+    kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+} else {
+  cat("Ejecuta descarga_temperatura_copernicus_arojasar.R para generar la zonificación de anomalías.")
+}
+```
+
+:::
