@@ -14,29 +14,24 @@ execute:
   message: true
   execute-dir: project
 params:
-  lon_min: -98
-  lon_max: -90
-  lat_min: -0.5
-  lat_max: 6.5
-  year_start: 1990
+  lon_min: -93
+  lon_max: -88.5
+  lat_min: -2.0
+  lat_max: 2.2
+  year_start: 1994
   year_end: 2025
   execute_download: true
   grid_res: 0.25
-  run_rarefaction: true
-  max_rarefaction_groups: 4
-  n_saturation_groups_per_rank: 3
-  min_records_cell_rarefaction: 20
-  max_saturation_cell_units: 10000
-  saturation_curve_points: 35
+  grid_res_map: 0.05
 ---
 
 ## 1. ¿Qué hace este QMD?
 
-Este documento descarga registros de ocurrencia de **OBIS** mediante **`robis`**, para un dominio geográfico y periodo definido. Los datos se almacenan por año en `raw/` y posteriormente se integran.
+Este QMD descarga registros de ocurrencia de **OBIS** para un dominio geográfico y periodo definidos, los integra en una base única y aplica procesos de **depuración, validación y estandarización taxonómica, espacial y temporal**. Luego realiza un **análisis exploratorio de datos (EDA)** para describir la distribución de los registros por año, mes y grupo taxonómico, así como su cobertura y continuidad espacio-temporal. El objetivo es identificar conjuntos biológicos con información adecuada para análisis posteriores de **diversidad** y su relación con **variables oceanográficas**, manteniendo la trazabilidad de los datos y la representatividad del muestreo.
 
-La base integrada se somete a procesos de **depuración, validación y estandarización taxonómica, espacial y temporal**, excluyendo registros no pertinentes, como fósiles, ausencias y duplicados. El resultado se almacena en una base estandarizada en `cin/`.
+Como referencia espacial para el archipiélago de Galápagos. Esta figura muestra las cuatro bioregiones principales del archipiélago (**far-north, north, centre-south y cold-west**), los estratos geográficos definidos a lo largo de la costa y la ubicación general de Galápagos en el Pacífico Oriental Tropical.
 
-Se realiza un **análisis exploratorio de datos (EDA)** para evaluar la distribución de registros por **año, mes y grupo taxonómico**, así como su cobertura y continuidad espacio-temporal. Esto permite identificar grupos biológicos con información adecuada para posteriores análisis de **diversidad** y su relación con **variables oceanográficas**.
+![**Figura 1.** Mapa del archipiélago de Galápagos adaptado de McKinley et al. (2023)](1-s2.0-S0272771423000914-main.png)
 
 ## 2. Configuración y funciones
 
@@ -203,26 +198,14 @@ cat(
   if (isTRUE(p$run_rarefaction)) "ACTIVADA" else "DESACTIVADA",
   "\n",
   " Saturación eventos : ",
-  if (!is.null(p$n_saturation_groups_per_rank)) "CONFIGURADA" else "No configurada",
-  "\n\n",
-
-  " 06. DIRECTORIOS DE SALIDA\n",
-  separator, "\n",
-  " Datos originales     : ", paths$raw, "\n",
-  " Datos estandarizados : ", paths$cin, "\n",
-  " Tablas               : ", paths$tab, "\n",
-  " Figuras              : ", paths$fig, "\n\n",
-
-  line, "\n",
-  sep = ""
+  if (!is.null(p$n_saturation_groups_per_rank)) "CONFIGURADA" else "No configurada"
 )
 
 ```
 
-## 3. Descarga e integración anual de ocurrencias 
+## 3. Descarga e integración anual de ocurrencias
 
 Se realiza **una consulta por año**, conservando todos los campos en OBIS en CSV, y se integran los archivos anuales mediante `dplyr::bind_rows()`.
-
 
 ```{r}
 #| label: download
@@ -230,6 +213,7 @@ manifest <- obis_download_period(years,wkt,paths$raw,p$execute_download)
 obis_write_csv(manifest,file.path(paths$tab,"00_write_descargas.csv"))
 print(manifest)
 ```
+
 ```{r}
 #| label: integrate
 raw_all <- obis_integrate_raw(manifest,years,paths$raw)
@@ -243,7 +227,7 @@ if (is.null(raw_all)) {
 
 ## 4. Depuración y estandarización
 
-Se conservan registros georreferenciados, identificados a nivel de especie y de afinidad marina confirmada. Se excluyen fósiles, ausencias, duplicados, registros descartados por OBIS y alertas explícitas de tierra. Se revisa cada exclusión. 
+Se conservan registros georreferenciados, identificados a nivel de especie y de afinidad marina confirmada. Se excluyen fósiles, ausencias, duplicados, registros descartados por OBIS y alertas explícitas de tierra. Se revisa cada exclusión.
 
 ```{r}
 #| label: clean
@@ -263,7 +247,7 @@ if (!is.null(processed)) {
 
 ## 5. Evaluación de grupos taxonómicos
 
-La selección exploratoria considera el número de especies, años representados, continuidad temporal y diversidad de conjuntos de datos, por **filo, clase, orden**. 
+La selección exploratoria considera el número de especies, años representados, continuidad temporal y diversidad de conjuntos de datos, por **filo, clase, orden**.
 
 ```{r}
 #| label: screening
@@ -278,7 +262,7 @@ if(!is.null(screening)) {
   
   print(utils::head(dplyr::arrange(screening$representativity,
                                    dplyr::desc(species),
-             dplyr::desc(years_present),dplyr::desc(records)),25),n=10)
+             dplyr::desc(years_present),dplyr::desc(records)),25),n = 10)
 }
 ```
 
@@ -286,37 +270,52 @@ if(!is.null(screening)) {
 
 Las figuras muestran **cobertura temporal**. Las tablas de conteos incluyen todos los grupos; para visualizar la composición se presentan los doce taxones con más registros en cada rango.
 
+La @fig-obis-anual presenta el número de ocurrencias documentadas por año, considerando todos los grupos taxonómicos retenidos después de la depuración.
+
 ```{r}
-#| label: eda
+#| label: fig-obis-anual
+#| fig-cap: "Distribución anual de registros de ocurrencia de biodiversidad marina en el archipiélago de Galápagos durante 1994–2025. Fuente: OBIS, datos depurados."
+#| fig-width: 11
+#| fig-height: 5
+#| fig-align: center
 #| warning: false
 
 eda <- obis_eda_tables(clean)
-
-if (!is.null(eda)) {
-  
-  obis_write_csv(eda$year_month,
+obis_write_csv(eda$year_month,
                  file.path(paths$tab,"03_registros_por_anio_mes.csv"))
   
-  g1 <- ggplot2::ggplot(eda$yearly,ggplot2::aes(year_analysis,records)) +
+g1 <- ggplot2::ggplot(eda$yearly,ggplot2::aes(year_analysis,records)) +
     ggplot2::geom_col(fill = "#000000") +
     ggplot2::labs(
-      title = "OBIS: ocurrencias por año",x = NULL,y = "Número de registros") +
-    ggplot2::scale_x_continuous(breaks = seq(min(years), max(years), by = 5), expand = c(0.01, 0.01)) + 
-    ggplot2::scale_y_continuous(expand = c(0, 0), limits = c(0, 5000)) + 
+      title = NULL,x = NULL,y = "Número de registros") +
+    ggplot2::scale_x_continuous(breaks = seq(1995, 2025, by = 5), expand = c(0.01, 0.01)) + 
+    ggplot2::scale_y_continuous(expand = c(0, 0), limits = c(0, 11*1E3)) + 
     ggplot2::theme_bw(base_size = 12)
   
   print(g1)
-  
   ggplot2::ggsave(file.path(paths$fig,"03_registros_por_anio.png"),g1,
                   width = 11*0.7, height = 5*0.7, dpi = 350, bg = "white")
+```
+
+La @fig-obis-anio-mes muestra la distribución de los registros de ocurrencia por año y mes, permitiendo identificar periodos de mayor documentación y posibles discontinuidades temporales en la información disponible.
+
+```{r}
+#| label: fig-obis-anio-mes
+#| fig-cap: "Distribución de registros de ocurrencia de biodiversidad marina por año y mes en el archipiélago de Galápagos durante 1994–2025. Los espacios sin color indican combinaciones año-mes sin registros documentados. Fuente: OBIS, datos depurados."
+#| fig-width: 11
+#| fig-height: 5.5
+#| fig-align: center
+#| warning: false
+  
 
   g3 <- ggplot2::ggplot(eda$year_month,
                         ggplot2::aes(year_analysis,month_analysis,fill=records)) +
     ggplot2::geom_tile(colour = "#000000", linewidth = 0.7) +
     ggplot2::scale_fill_viridis_c(option = "plasma", direction = -1) +
-    ggplot2::scale_y_continuous( breaks = 1:12) +
     ggplot2::labs(title = "OBIS: ocurrencias por año y mes", x = NULL, y = NULL, fill = "Registros") +
-   ggplot2::theme_bw(base_size = 12) + 
+    ggplot2::scale_x_continuous(expand = c(0, 0)) + 
+    ggplot2::scale_y_continuous(breaks = 1:12, expand = c(0, 0)) + 
+    ggplot2::theme_bw(base_size = 12) + 
     ggplot2::theme(panel.grid = ggplot2::element_blank())
   
   
@@ -324,7 +323,15 @@ if (!is.null(eda)) {
   
   ggplot2::ggsave(file.path(paths$fig,"03_anio_mes.png"), g3,
                  width = 11*0.8, height = 5*0.7, dpi = 350, bg = "white")
-  
+```
+
+```{r}
+#| label: fig-obis-filos
+#| fig-cap: "Variación anual de los registros de ocurrencia de los nueve grupos más documentados en OBIS para Galápagos durante 1994–2025. Las escalas verticales son independientes entre paneles. Fuente: OBIS, datos depurados."
+#| fig-width: 10
+#| fig-height: 5
+#| fig-align: center
+#| warning: false
 
   if (!is.null(screening)) {
 
@@ -373,7 +380,7 @@ if (!is.null(eda)) {
         x = NULL,
         y = "Ocurrencias"
       ) +
-      ggplot2::theme_bw(base_size = 12) +
+      ggplot2::theme_bw(base_size = 18) +
       ggplot2::theme(
         strip.text = ggplot2::element_text(face = "bold"),
         plot.title = ggplot2::element_text(face = "bold")
@@ -390,8 +397,8 @@ if (!is.null(eda)) {
       bg = "white"
     )
   }
-  }
 }
+
 ```
 
 ## 7. Representatividad espacial por grupo taxonómico
@@ -423,12 +430,21 @@ if (!is.null(clean) && nrow(clean)) {
 
 ### Distribución espacial anual por grupo
 
-Las facetas conservan el orden de **mayor a menor número total de registros**. La primera figura muestra cuántas celdas cuentan con registros; la segunda, la proporción de registros concentrados en la celda dominante; la tercera, el promedio de registros por celda ocupada. 
+Las facetas conservan el orden de **mayor a menor número total de registros**. La primera figura muestra cuántas celdas cuentan con registros; la segunda, la proporción de registros concentrados en la celda dominante; la tercera, el promedio de registros por celda ocupada.
 
 ```{r}
-#| label: spatial-facets
-#| fig-width: 12
-#| fig-height: 8
+#| label: fig-spatial-facets
+#| fig-cap: "Variación espacio-temporal de la cobertura, concentración e intensidad documental de las nueve clases taxonómicas con mayor número de registros en Galápagos durante 1994–2025."
+#| fig-subcap:
+#|   - "Número de celdas geográficas con registros por año."
+#|   - "Proporción de registros concentrados en la celda dominante por año."
+#|   - "Número promedio de registros por celda documentada y año."
+#| fig-width: 10
+#| fig-height: 5
+#| fig-align: center
+#| warning: false
+
+
 if (!is.null(spatial) && nrow(spatial$annual)) {
   for (nivel in c("class")) {
     for (metric in c("n_cells", "max_cell_share", "mean_records_per_cell")) {
@@ -453,18 +469,17 @@ if (!is.null(spatial) && nrow(spatial$annual)) {
 }
 ```
 
-| Clase | Cobertura espacial | Concentración | Intensidad de eventos | Evaluación  |
-|---|---|---|---|---|
+| Clase | Cobertura espacial | Concentración | Intensidad de eventos | Evaluación |
+|---------------|---------------|---------------|---------------|---------------|
 | **Teleostei** | Relativamente alta | Moderada | Alta, variable | Candidato favorable |
 | Malacostraca | Moderada | Moderada-alta en algunos años | Muy variable | Revisar distribución por dataset |
 | Holothuroidea | Moderada en años recientes | Alta en algunos años | Picos marcados | Posible sesgo de muestreo |
 | Elasmobranchii | Aumenta con el tiempo | Disminuye en años recientes | Relativamente baja | Candidato para revisar, especialmente en años recientes |
 | Globothalamea | Muy baja | Extremadamente alta | Un valor inicial excepcional | Poco apropiado para análisis espacio-temporal con esta información |
 
+## 8. Diagnóstico para seleccionar grupos
 
-## 8. Diagnóstico para seleccionar grupos candidatos
-
-Se combinan indicadores temporales y espaciales para **comparar clases**. La evaluación incluye número de especies identificadas, años con registros, racha de continuidad, celdas observadas por año, dominancia de la celda principal y procedencia de los registros. 
+Se combinan indicadores temporales y espaciales para **comparar clases**. La evaluación incluye número de especies identificadas, años con registros, racha de continuidad, celdas observadas por año, dominancia de la celda principal y procedencia de los registros.
 
 ```{r}
 #| label: integrated-screening
@@ -479,6 +494,7 @@ if (!is.null(spatial) && !is.null(screening)) {
   print(utils::head(suitability, 30), n = 10)
 }
 ```
+
 ```{r}
 #| label: select-teleostei
 
@@ -554,29 +570,1059 @@ obis_write_csv(
 )
 
 print(teleostei_annual)
+```
+
+## 9. Caracterización taxonómica de Teleostei
+
+Se evalúa la composición taxonómica de Teleostei mediante el número de ocurrencias, riqueza registrada y continuidad temporal de sus principales órdenes, familias, géneros y especies. Esta caracterización permite identificar los grupos predominantes y orientar la selección de ensamblajes ecológicamente coherentes.
+
+```{r}
+#| label: fig-teleostei-rankings
+#| fig-cap: "Principales órdenes, familias, géneros y especies de Teleostei según el número acumulado de ocurrencias en Galápagos durante 1994–2025."
+#| fig-width: 10
+#| fig-height: 7
+#| fig-align: center
+#| warning: false
+
+tax_rank <- teleostei |>
+  tidyr::pivot_longer(
+    cols = c(order, family, genus, species_accepted),
+    names_to = "rank",
+    values_to = "taxon"
+  ) |>
+  dplyr::filter(!is.na(taxon), taxon != "") |>
+  dplyr::count(rank, taxon, name = "records") |>
+  dplyr::arrange(rank, dplyr::desc(records))
+
+obis_write_csv(
+  tax_rank,
+  file.path(paths$tab, "10_teleostei_rankings.csv")
+)
+
+top_taxa <- tax_rank |>
+  dplyr::group_by(rank) |>
+  dplyr::slice_max(
+    records, n = 10, with_ties = FALSE
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(
+    rank = factor(
+      rank,
+      levels = c("order", "family", "genus", "species_accepted"),
+      labels = c("Orden", "Familia", "Género", "Especie")
+    ),
+    taxon_key = paste(rank, taxon, sep = "___")
+  ) |>
+  dplyr::arrange(records) |>
+  dplyr::mutate(
+    taxon_key = factor(taxon_key, levels = unique(taxon_key))
+  )
+
+g_rank <- ggplot2::ggplot(
+  top_taxa,
+  ggplot2::aes(taxon_key, records, fill = rank)
+) +
+  ggplot2::geom_col() +
+  ggplot2::facet_wrap(~ rank, scales = "free", ncol = 2) +
+  ggplot2::coord_flip() +
+  ggplot2::scale_x_discrete(
+    labels = function(x) sub("^.*___", "", x)
+  ) +
+  ggplot2::labs(x = NULL, y = "Ocurrencias") +
+  ggplot2::theme_bw(base_size = 15) +
+  ggplot2::theme(
+    strip.text = ggplot2::element_text(face = "bold")
+  )
+
+print(g_rank)
+
+ggplot2::ggsave(
+  file.path(paths$fig, "10_teleostei_rankings.png"),
+  g_rank, width = 12, height = 9,
+  dpi = 350, bg = "white"
+)
+```
+
+
+## 10. Caracterización y representatividad de los grupos ecológicos de Teleostei
+
+La diversidad de Teleostei comprende especies con diferentes afinidades de hábitat, estrategias ecológicas y patrones de distribución espacial. Por ello, se realiza una clasificación ecológica a nivel de especie para identificar ensamblajes potencialmente adecuados para estudios de diversidad y variabilidad ambiental en el archipiélago de Galápagos.
+
+Se evalúa la representatividad de cada grupo mediante el número de ocurrencias, riqueza observada, cobertura y continuidad temporal. Este diagnóstico, complementado con los antecedentes de investigación sobre comunidades de peces arrecifales en Galápagos (Edgar et al., 2004; Bruneel et al., 2021; McKinley et al., 2022, 2023), permite sustentar la selección preliminar del ensamblaje focal.
+
+
+### 10.1. Clasificación ecológica por especie
+
+La clasificación ecológica preliminar considera la afinidad de hábitat de cada especie, tomando como fuentes de referencia FishBase, Shorefishes of the Eastern Pacific, la lista regional de peces de Galápagos (Victor et al., 2026) y los inventarios de los estudios sobre comunidades arrecifales (Edgar et al., 2004; McKinley et al., 2022, 2023).
+
+Se establecen siete categorías ecológicas, ilustradas mediante especies representativas de cada grupo.
+
+| Imagen representativa | Grupo ecológico | Especie representativa | Descripción |
+|:---:|---|---|---|
+| ![](cin/10.1/Stegastes%20arcifrons.jpg){width=180px} | **Arrecifal** | *Stegastes arcifrons* | Especies estrechamente asociadas a arrecifes y fondos rocosos. |
+| ![](cin/10.1/Caranx%20melampygus.jpg){width=180px} | **Asociación arrecifal variable** | *Caranx melampygus* | Especies que utilizan ambientes arrecifales, pero también otros hábitats. |
+| ![](cin/10.1/Thunnus%20albacares.jpg){width=180px} | **Pelágico** | *Thunnus albacares* | Especies asociadas principalmente a la columna de agua. |
+| ![](cin/10.1/Mugil%20cephalus.jpg){width=180px} | **Costero generalista** | *Mugil cephalus* | Especies que utilizan diversos hábitats costeros. |
+| ![](cin/10.1/Demersal%20no%20arrecifal.jpg){width=180px} | **Demersal no arrecifal** | *Bothus mancus* | Especies asociadas principalmente a fondos no arrecifales. |
+| ![](cin/10.1/Diaphus%20theta.jpg){width=180px} | **Aguas profundas** | *Diaphus theta* | Especies asociadas a ambientes mesopelágicos y otros ambientes profundos. |
+| ** | **Sin clasificar** | ** | Especies cuya afinidad ecológica requiere mayor verificación. |
+
+La clasificación presentada en la @tbl-ecological-classification permite diferenciar los principales grupos ecológicos de Teleostei y constituye la base para evaluar su representatividad taxonómica, espacial y temporal.
+
+
+```{r}
+#| label: teleostei-ecological-inventory
+
+species_inventory <- teleostei |>
+  dplyr::group_by(species_accepted, family, genus) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    years = dplyr::n_distinct(year_analysis),
+    first_year = min(year_analysis),
+    last_year = max(year_analysis),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(dplyr::desc(records))
+
+habitat_file <- file.path(
+  paths$cin,
+  "teleostei_habitat_classification.csv"
+)
+
+if (!file.exists(habitat_file)) {
+
+  habitat_template <- species_inventory |>
+    dplyr::distinct(species_accepted) |>
+    dplyr::mutate(
+      ecological_group = NA_character_,
+      reef_associated = NA,
+      reference = NA_character_,
+      classification_status = "PENDIENTE"
+    )
+
+  obis_write_csv(habitat_template, habitat_file)
+}
+
+print(species_inventory, n = 20)
+```
+
+### 10.2. Composición por grupo ecológico
+
+Se clasifican las especies de Teleostei según su afinidad ecológica, con el propósito de comparar la representatividad de los diferentes ensamblajes presentes en la base de OBIS.
+
+```{r}
+#| label: fig-teleostei-ecological-composition
+#| fig-cap: "Número de especies y registros de ocurrencia de Teleostei según su clasificación ecológica preliminar en Galápagos durante 1994–2025."
+#| fig-width: 12
+#| fig-height: 5
+#| fig-align: center
+#| warning: false
+
+habitat <- readr::read_csv(
+  file.path(paths$cin, "teleostei_habitat_classification.csv"),
+  show_col_types = FALSE
+)
+
+stopifnot(!anyDuplicated(habitat$species_accepted))
+
+teleostei_ecological <- teleostei |>
+  dplyr::left_join(habitat, by = "species_accepted") |>
+  dplyr::mutate(
+    ecological_group = dplyr::coalesce(
+      ecological_group, "Sin clasificar"
+    )
+  )
+
+eco_summary <- teleostei_ecological |>
+  dplyr::group_by(ecological_group) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    species = dplyr::n_distinct(species_accepted),
+    years = dplyr::n_distinct(year_analysis),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(dplyr::desc(records))
+
+obis_write_csv(
+  eco_summary,
+  file.path(paths$tab, "11_teleostei_ecological_summary.csv")
+)
+
+eco_plot <- eco_summary |>
+  tidyr::pivot_longer(
+    cols = c(records, species),
+    names_to = "metric",
+    values_to = "value"
+  ) |>
+  dplyr::mutate(
+    metric = factor(
+      metric,
+      levels = c("records", "species"),
+      labels = c("Ocurrencias", "Especies")
+    )
+  )
+
+g_eco <- ggplot2::ggplot(
+  eco_plot,
+  ggplot2::aes(
+    x = reorder(ecological_group, value),
+    y = value,
+    fill = ecological_group
+  )
+) +
+  ggplot2::geom_col(show.legend = FALSE, col = 1) +
+  ggplot2::facet_wrap(~metric, scales = "free", ncol = 2) +
+  ggplot2::coord_flip() +
+  ggplot2::labs(x = NULL, y = NULL) +
+  ggplot2::theme_bw(base_size = 18) +
+  ggplot2::theme(
+    strip.text = ggplot2::element_text(face = "bold")
+  )
+
+print(g_eco)
+
+ggplot2::ggsave(
+  file.path(paths$fig, "11_teleostei_ecological_composition.png"),
+  g_eco,
+  width = 10, height = 5,
+  dpi = 350, bg = "white"
+)
+
+print(eco_summary)
+```
+
+**Interpretación.** Los peces arrecifales concentran la mayor proporción de ocurrencias y riqueza registrada de Teleostei, seguidos por las especies con asociación arrecifal variable. Este predominio documental, junto con los antecedentes de monitoreo de comunidades arrecifales en Galápagos, sustenta preliminarmente su selección como ensamblaje focal del estudio.
+
+### 10.3. Variación anual de ocurrencias por grupo ecológico
+
+La @fig-teleostei-ecological-annual muestra la distribución temporal de las ocurrencias de Teleostei según su afinidad ecológica. Se evalúa la continuidad de los registros y su variabilidad interanual como criterios para seleccionar el ensamblaje focal del estudio.
+
+```{r}
+#| label: fig-teleostei-ecological-annual
+#| fig-cap: "Variación anual del número de ocurrencias de Teleostei por grupo ecológico en el archipiélago de Galápagos durante 1994–2025. Las escalas verticales son independientes entre paneles. Fuente: OBIS, datos depurados y clasificación ecológica preliminar."
+#| fig-width: 10
+#| fig-height: 5
+#| fig-align: center
+#| warning: false
+
+# Orden de los grupos por número total de registros
+eco_levels <- eco_summary |>
+  dplyr::arrange(dplyr::desc(records)) |>
+  dplyr::pull(ecological_group)
+
+# Resumen anual
+eco_annual <- teleostei_ecological |>
+  dplyr::group_by(ecological_group, year_analysis) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    species = dplyr::n_distinct(species_accepted),
+    .groups = "drop"
+  ) |>
+  tidyr::complete(
+    ecological_group = eco_levels,
+    year_analysis = years,
+    fill = list(
+      records = NA_integer_,
+      species = NA_integer_
+    )
+  ) |>
+  dplyr::mutate(
+    ecological_group = factor(
+      ecological_group,
+      levels = eco_levels
+    )
+  ) |>
+  dplyr::arrange(ecological_group, year_analysis)
+
+# Exportación
+obis_write_csv(
+  eco_annual,
+  file.path(paths$tab, "11_teleostei_ecological_annual.csv")
+)
+
+# Visualización
+g_eco_annual <- ggplot2::ggplot(
+  eco_annual,
+  ggplot2::aes(
+    x = year_analysis,
+    y = records,
+    colour = ecological_group,
+    group = ecological_group
+  )
+) +
+  ggplot2::geom_line(linewidth = 0.4, na.rm = TRUE) +
+  ggplot2::geom_point(size = 1.8, na.rm = TRUE) +
+  ggplot2::facet_wrap(
+    ~ ecological_group,
+    scales = "free_y",
+    ncol = 3
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = seq(1995, 2025, by = 10),
+    limits = range(years)
+  ) +
+  ggplot2::scale_y_continuous(
+    expand = ggplot2::expansion(mult = c(0.05, 0.10))
+  ) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Número de ocurrencias"
+  ) +
+  ggplot2::theme_bw(base_size = 18) +
+  ggplot2::theme(
+    legend.position = "none",
+    strip.text = ggplot2::element_text(
+      face = "bold",
+      size = 10
+    ),
+    panel.grid.minor = ggplot2::element_blank(),
+    panel.spacing = grid::unit(0.8, "lines")
+  )
+
+print(g_eco_annual)
+
+ggplot2::ggsave(
+  file.path(paths$fig, "11_teleostei_ecological_annual.png"),
+  plot = g_eco_annual,
+  width = 10,
+  height = 6,
+  dpi = 350,
+  bg = "white"
+)
+```
+
+**Interpretación.** Los peces arrecifales presentan la mayor cantidad de ocurrencias y una elevada continuidad temporal durante 1994–2025. En contraste, los grupos pelágicos, costeros generalistas y de aguas profundas muestran menor intensidad documental o mayor discontinuidad temporal. Estos resultados favorecen preliminarmente la selección del ensamblaje arrecifal para investigaciones de largo plazo, condicionada a la evaluación de la comparabilidad del muestreo.
+
+### 10.4. Variación anual de la riqueza observada por grupo ecológico
+
+La @fig-teleostei-ecological-richness muestra la variación interanual del número de especies registradas por grupo ecológico, permitiendo evaluar la continuidad y representatividad taxonómica de los ensamblajes.
+
+```{r}
+#| label: fig-teleostei-ecological-richness
+#| fig-cap: "Variación anual de la riqueza observada de Teleostei por grupo ecológico en el archipiélago de Galápagos durante 1994–2025. Las escalas verticales son independientes entre paneles. Fuente: OBIS, datos depurados y clasificación ecológica preliminar."
+#| fig-width: 10
+#| fig-height: 5
+#| fig-align: center
+#| warning: false
+
+g_eco_richness <- ggplot2::ggplot(
+  eco_annual,
+  ggplot2::aes(
+    x = year_analysis,
+    y = species,
+    colour = ecological_group,
+    group = ecological_group
+  )
+) +
+  ggplot2::geom_line(
+    linewidth = 0.4,
+    na.rm = TRUE
+  ) +
+  ggplot2::geom_point(
+    size = 1.5,
+    na.rm = TRUE
+  ) +
+  ggplot2::facet_wrap(
+    ~ ecological_group,
+    scales = "free_y",
+    ncol = 3
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = seq(1995, 2025, by = 10),
+    limits = range(years)
+  ) +
+  ggplot2::scale_y_continuous(
+    expand = ggplot2::expansion(
+      mult = c(0.05, 0.10)
+    )
+  ) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Número de especies"
+  ) +
+  ggplot2::theme_bw(base_size = 18) +
+  ggplot2::theme(
+    legend.position = "none",
+    strip.text = ggplot2::element_text(
+      face = "bold",
+      size = 10
+    ),
+    panel.grid.minor = ggplot2::element_blank(),
+    panel.spacing = grid::unit(0.8, "lines")
+  )
+
+print(g_eco_richness)
+
+ggplot2::ggsave(
+  file.path(
+    paths$fig,
+    "11_teleostei_ecological_richness.png"
+  ),
+  plot = g_eco_richness,
+  width = 10,
+  height = 6,
+  dpi = 350,
+  bg = "white"
+)
+```
+
+**Interpretación.** Los peces arrecifales presentan la mayor riqueza observada durante el periodo 1994–2025, registrándose generalmente entre 60 y 90 especies por año y superando las 100 especies en los años recientes. Las especies con asociación arrecifal variable constituyen el segundo grupo con mayor riqueza y continuidad temporal. En contraste, los grupos pelágicos, demersales y de aguas profundas presentan una menor riqueza anual documentada o mayor discontinuidad. Estos resultados respaldan preliminarmente la selección del ensamblaje arrecifal para posteriores análisis de diversidad y variabilidad ambiental.
+
+### 10.5. Representatividad y continuidad temporal por grupo ecológico
+
+Se integran indicadores de riqueza registrada, intensidad de ocurrencias y continuidad temporal para evaluar la idoneidad de los diferentes grupos ecológicos de Teleostei a largo plazo.
+
+```{r}
+#| label: tbl-teleostei-ecological-suitability
+#| tbl-cap: "Indicadores de representatividad y continuidad temporal de los grupos ecológicos de Teleostei en Galápagos durante 1994–2025."
+#| warning: false
+
+eco_suitability <- eco_annual |>
+  dplyr::group_by(ecological_group) |>
+  dplyr::summarise(
+    years_present = sum(records > 0, na.rm = TRUE),
+    
+    temporal_coverage = 100 * years_present / length(years),
+    
+    longest_run = {
+      r <- rle(!is.na(records) & records > 0)
+      max(c(0, r$lengths[r$values]))
+    },
+    
+    records_mean = mean(records, na.rm = TRUE),
+    
+    records_cv = 100 * sd(records, na.rm = TRUE) /
+      mean(records, na.rm = TRUE),
+    
+    richness_mean = mean(species, na.rm = TRUE),
+    
+    richness_min = min(species, na.rm = TRUE),
+    
+    richness_max = max(species, na.rm = TRUE),
+    
+    richness_cv = 100 * sd(species, na.rm = TRUE) /
+      mean(species, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) |>
+  dplyr::left_join(
+    eco_summary |>
+      dplyr::select(ecological_group, records, species),
+    by = "ecological_group"
+  ) |>
+  dplyr::mutate(
+    records_share = 100 * records / sum(records),
+    species_share = 100 * species / sum(species)
+  ) |>
+  dplyr::select(
+    ecological_group,
+    records,
+    records_share,
+    species,
+    species_share,
+    years_present,
+    temporal_coverage,
+    longest_run,
+    records_mean,
+    records_cv,
+    richness_mean,
+    richness_min,
+    richness_max,
+    richness_cv
+  ) |>
+  dplyr::arrange(dplyr::desc(records))
+
+obis_write_csv(
+  eco_suitability,
+  file.path(
+    paths$tab,
+    "11_teleostei_ecological_suitability.csv"
+  )
+)
+
+knitr::kable(
+  eco_suitability,
+  digits = 1
+)
+```
+
+**Interpretación.** Los peces arrecifales presentan la mayor representatividad (79,7 % de las ocurrencias), una riqueza acumulada de 128 especies y cobertura temporal continua durante los 32 años evaluados. Asimismo, presentan la menor variabilidad interanual relativa de la riqueza observada (CV = 18,9 %). Estos atributos, junto con los antecedentes de investigación sobre comunidades arrecifales en Galápagos, respaldan su selección como ensamblaje focal para el estudio de la diversidad y su relación con la variabilidad oceanográfica.
+
+## 11. Caracterización espacial de Teleostei
+
+Se examina la distribución espacial de las ocurrencias, riqueza observada y continuidad temporal de los grupos ecológicos de Teleostei mediante una cuadrícula de mayor resolución (0,05°). El objetivo es identificar patrones de concentración de ocurrencias y evaluar la cobertura geográfica de los ensamblajes presentes en el archipiélago de Galápagos.
+
+### 11.1. Configuración espacial
+
+```{r}
+#| label: spatial-teleostei-setup
+#| warning: false
+
+p$grid_res_map <- 0.05
+grid_res_map <- as.numeric(p$grid_res_map)
+
+stopifnot(
+  length(grid_res_map) == 1L,
+  is.finite(grid_res_map),
+  grid_res_map > 0
+)
+
+# Dominio geográfico
+bbox <- sf::st_bbox(
+  c(
+    xmin = p$lon_min,
+    ymin = p$lat_min,
+    xmax = p$lon_max,
+    ymax = p$lat_max
+  ),
+  crs = sf::st_crs(4326)
+)
+
+# Cartografía costera de Natural Earth
+coast_file <- file.path(
+  paths$cin, "galapagos_coast_10m.rds"
+)
+
+if (!file.exists(coast_file)) {
+
+  land <- rnaturalearth::ne_download(
+    scale = 10,
+    type = "land",
+    category = "physical",
+    returnclass = "sf"
+  )
+
+  land <- sf::st_transform(land, 4326)
+
+  galapagos_land <- sf::st_crop(
+    land, bbox
+  )
+
+  saveRDS(galapagos_land, coast_file)
+
+} else {
+
+  galapagos_land <- readRDS(coast_file)
+
+}
+
+# Identificación de campos geográficos
+lon_col <- intersect(
+  c("decimalLongitude", "longitude", "lon"),
+  names(teleostei_ecological)
+)
+
+lat_col <- intersect(
+  c("decimalLatitude", "latitude", "lat"),
+  names(teleostei_ecological)
+)
+
+stopifnot(
+  length(lon_col) > 0,
+  length(lat_col) > 0
+)
+
+# Asignación de ocurrencias a celdas
+teleostei_grid <- teleostei_ecological |>
+  dplyr::mutate(
+    lon = as.numeric(.data[[lon_col[1]]]),
+    lat = as.numeric(.data[[lat_col[1]]])
+  ) |>
+  dplyr::filter(
+    is.finite(lon),
+    is.finite(lat),
+    lon >= p$lon_min,
+    lon <= p$lon_max,
+    lat >= p$lat_min,
+    lat <= p$lat_max
+  ) |>
+  dplyr::mutate(
+    cell_x = pmin(
+      floor((lon - p$lon_min) / grid_res_map),
+      ceiling((p$lon_max - p$lon_min) /
+                grid_res_map) - 1
+    ),
+    cell_y = pmin(
+      floor((lat - p$lat_min) / grid_res_map),
+      ceiling((p$lat_max - p$lat_min) /
+                grid_res_map) - 1
+    ),
+    lon_grid = p$lon_min +
+      (cell_x + 0.5) * grid_res_map,
+    lat_grid = p$lat_min +
+      (cell_y + 0.5) * grid_res_map,
+    cell_id = paste(cell_x, cell_y, sep = "_")
+  )
+
+# Resumen de todas las ocurrencias
+grid_total <- teleostei_grid |>
+  dplyr::group_by(
+    cell_id, lon_grid, lat_grid
+  ) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    species = dplyr::n_distinct(species_accepted),
+    years_present = dplyr::n_distinct(year_analysis),
+    .groups = "drop"
+  )
+
+# Resumen por grupo ecológico
+grid_ecological <- teleostei_grid |>
+  dplyr::group_by(
+    ecological_group,
+    cell_id, lon_grid, lat_grid
+  ) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    species = dplyr::n_distinct(species_accepted),
+    years_present = dplyr::n_distinct(year_analysis),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    ecological_group = factor(
+      ecological_group,
+      levels = eco_levels
+    )
+  )
+
+# Exportación de resultados espaciales
+obis_write_csv(
+  grid_total,
+  file.path(paths$tab, "12_teleostei_grid_total.csv")
+)
+
+obis_write_csv(
+  grid_ecological,
+  file.path(paths$tab, "12_teleostei_grid_ecological.csv")
+)
 
 cat(
   "\n",
-  "============================================================\n",
-  " OBIS | BASE TAXONÓMICA SELECCIONADA\n",
-  "============================================================\n",
-  " Clase               : Teleostei\n",
-  " Registros           : ", nrow(teleostei), "\n",
-  " Especies            : ",
-  dplyr::n_distinct(teleostei$species_accepted), "\n",
-  " Años documentados   : ",
-  dplyr::n_distinct(teleostei$year_analysis), "\n",
-  " Periodo             : ",
-  min(years), "–", max(years), "\n",
-  " Resolución espacial : ", p$grid_res, "° (análisis posterior)\n",
-  " Variables           : ", ncol(teleostei), "\n",
-  " Archivo             : ", file_teleostei, "\n",
-  "============================================================\n",
+  "============================================\n",
+  " TELEOSTEI | CONFIGURACIÓN ESPACIAL\n",
+  "============================================\n",
+  " Resolución     : ", grid_res_map, "°\n",
+  " Registros      : ", nrow(teleostei_grid), "\n",
+  " Celdas con datos: ", nrow(grid_total), "\n",
+  " Especies       : ",
+  dplyr::n_distinct(teleostei_grid$species_accepted),
+  "\n",
+  "============================================\n",
   sep = ""
 )
 ```
 
-### Referencias 
+```{r}
+#| label: spatial-map-function
+#| include: false
+
+plot_teleostei_map <- function(
+    data,
+    metric,
+    legend_title,
+    palette = "viridis",
+    transform = "identity",
+    facet = FALSE,
+    title = NULL
+) {
+
+  g <- ggplot2::ggplot() +
+
+    ggplot2::geom_tile(
+      data = data,
+      ggplot2::aes(
+        x = lon_grid,
+        y = lat_grid,
+        fill = .data[[metric]]
+      ),
+      width = grid_res_map,
+      height = grid_res_map
+    ) +
+
+    ggplot2::geom_sf(
+      data = galapagos_land,
+      fill = "grey85",
+      colour = "grey25",
+      linewidth = 0.25
+    ) +
+
+    ggplot2::scale_fill_viridis_c(
+      option = palette,
+      direction = 1,
+      trans = transform,
+      name = legend_title
+    ) +
+
+    ggplot2::coord_sf(
+      xlim = c(p$lon_min, p$lon_max),
+      ylim = c(p$lat_min, p$lat_max),
+      expand = FALSE
+    ) +
+
+    ggplot2::labs(
+      title = title,
+      x = NULL,
+      y = NULL
+    ) +
+
+    ggplot2::theme_bw(base_size = 18) +
+
+    ggplot2::theme(
+      panel.grid.major = ggplot2::element_line(
+        colour = "grey90",
+        linewidth = 0.2
+      ),
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.text = ggplot2::element_text(
+        face = "bold",
+        size = 10
+      ),
+      plot.title = ggplot2::element_text(
+        face = "bold",
+        size = 11,
+        hjust = 0.5
+      ),
+      legend.position = "right"
+    )
+
+  if (facet) {
+
+    g <- g +
+      ggplot2::facet_wrap(
+        ~ ecological_group,
+        ncol = 3
+      )
+
+  }
+
+  return(g)
+}
+```
+
+### 11.2. Distribución espacial general de Teleostei
+
+La @fig-teleostei-spatial-total presenta la distribución geográfica acumulada de las ocurrencias, riqueza observada y años documentados de Teleostei durante el periodo de estudio.
+
+```{r}
+#| label: fig-teleostei-spatial-total
+#| fig-cap: "Distribución espacial de Teleostei en Galápagos durante 1994–2025: (A) número acumulado de ocurrencias, (B) riqueza observada y (C) número de años con registros. Resolución espacial de 0,05°. Fuente: OBIS."
+#| fig-width: 15
+#| fig-height: 5
+#| fig-align: center
+#| warning: false
+
+g_records <- plot_teleostei_map(
+  data = grid_total,
+  metric = "records",
+  legend_title = "Registros",
+  palette = "plasma",
+  transform = "log1p",
+  title = "Ocurrencias"
+)
+
+g_species <- plot_teleostei_map(
+  data = grid_total,
+  metric = "species",
+  legend_title = "Especies",
+  palette = "viridis",
+  title = "Riqueza observada"
+)
+
+g_years <- plot_teleostei_map(
+  data = grid_total,
+  metric = "years_present",
+  legend_title = "Años",
+  palette = "magma",
+  title = "Cobertura temporal"
+)
+
+g_spatial_total <- cowplot::plot_grid(
+  g_records,
+  g_species,
+  g_years,
+  ncol = 3,
+  labels = c("A", "B", "C"),
+  label_size = 14
+)
+
+print(g_spatial_total)
+
+ggplot2::ggsave(
+  file.path(paths$fig, "12_teleostei_spatial_total.png"),
+  plot = g_spatial_total,
+  width = 15,
+  height = 5,
+  dpi = 350,
+  bg = "white"
+)
+```
+
+### 11.3. Distribución espacial de ocurrencias por grupo ecológico
+
+La @fig-teleostei-spatial-ecological permite comparar la distribución geográfica y concentración documental de los diferentes grupos ecológicos de Teleostei.
+
+```{r}
+#| label: fig-teleostei-spatial-ecological
+#| fig-cap: "Distribución espacial del número acumulado de ocurrencias de Teleostei por grupo ecológico en Galápagos durante 1994–2025. Resolución espacial de 0,05°. Fuente: OBIS y clasificación ecológica preliminar."
+#| fig-width: 10
+#| fig-height: 8
+#| fig-align: center
+#| warning: false
+
+g_eco_spatial_records <- plot_teleostei_map(
+  data = grid_ecological,
+  metric = "records",
+  legend_title = "Registros",
+  palette = "plasma",
+  transform = "log1p",
+  facet = TRUE
+)
+
+print(g_eco_spatial_records)
+
+ggplot2::ggsave(
+  file.path(
+    paths$fig,
+    "12_teleostei_ecological_spatial_records.png"
+  ),
+  plot = g_eco_spatial_records,
+  width = 12,
+  height = 10,
+  dpi = 350,
+  bg = "white"
+)
+```
+
+### 11.4. Distribución espacial de la riqueza observada
+
+La @fig-teleostei-spatial-richness muestra la distribución espacial del número acumulado de especies registradas por grupo ecológico.
+
+```{r}
+#| label: fig-teleostei-spatial-richness
+#| fig-cap: "Distribución espacial de la riqueza observada de Teleostei por grupo ecológico en Galápagos durante 1994–2025. Resolución espacial de 0,05°. Fuente: OBIS y clasificación ecológica preliminar."
+#| fig-width: 12
+#| fig-height: 10
+#| fig-align: center
+#| warning: false
+
+g_eco_spatial_species <- plot_teleostei_map(
+  data = grid_ecological,
+  metric = "species",
+  legend_title = "Especies",
+  palette = "viridis",
+  facet = TRUE
+)
+
+print(g_eco_spatial_species)
+
+ggplot2::ggsave(
+  file.path(
+    paths$fig,
+    "12_teleostei_ecological_spatial_species.png"
+  ),
+  plot = g_eco_spatial_species,
+  width = 12,
+  height = 10,
+  dpi = 350,
+  bg = "white"
+)
+```
+
+### 11.5. Cobertura temporal por celda geográfica
+
+La @fig-teleostei-spatial-years presenta el número de años con ocurrencias documentadas por celda y grupo ecológico, permitiendo identificar áreas con documentación recurrente y evaluar su potencial para estudios de largo plazo.
+
+```{r}
+#| label: fig-teleostei-spatial-years
+#| fig-cap: "Distribución espacial del número de años con ocurrencias documentadas de Teleostei por grupo ecológico en Galápagos durante 1994–2025. Resolución espacial de 0,05°. Fuente: OBIS."
+#| fig-width: 12
+#| fig-height: 10
+#| fig-align: center
+#| warning: false
+
+g_eco_spatial_years <- plot_teleostei_map(
+  data = grid_ecological,
+  metric = "years_present",
+  legend_title = "Años",
+  palette = "magma",
+  facet = TRUE
+) +
+  ggplot2::scale_fill_viridis_c(
+    option = "magma",
+    limits = c(1, length(years)),
+    breaks = c(1, 5, 10, 15, 20, 25, 30, 32),
+    name = "Años"
+  )
+
+print(g_eco_spatial_years)
+
+ggplot2::ggsave(
+  file.path(
+    paths$fig,
+    "12_teleostei_ecological_spatial_years.png"
+  ),
+  plot = g_eco_spatial_years,
+  width = 12,
+  height = 10,
+  dpi = 350,
+  bg = "white"
+)
+```
+
+## 12. Selección del ensamblaje de peces arrecifales
+
+Los peces arrecifales y las especies con asociación arrecifal variable fueron seleccionados por su elevada representatividad taxonómica, espacial y temporal. En conjunto, concentran 58 781 ocurrencias correspondientes a 221 especies, representando el 91,2 % de los registros de Teleostei y cubriendo la totalidad del periodo 1994–2025.
+
+Esta selección es coherente con los antecedentes de investigación sobre comunidades arrecifales, diversidad funcional y biogeografía marina del archipiélago de Galápagos (Edgar et al., 2004; McKinley et al., 2022, 2023).
+
+```{r}
+#| label: select-reef-fishes
+#| warning: false
+
+reef_groups <- c(
+  "Arrecifal",
+  "Asociacion arrecifal variable"
+)
+
+reef_fishes <- teleostei_ecological |>
+  dplyr::filter(
+    ecological_group %in% reef_groups
+  ) |>
+  dplyr::mutate(
+    ecological_group = factor(
+      ecological_group,
+      levels = reef_groups
+    )
+  ) |>
+  dplyr::arrange(
+    year_analysis,
+    month_analysis,
+    species_accepted
+  )
+
+stopifnot(nrow(reef_fishes) > 0)
+
+reef_summary <- reef_fishes |>
+  dplyr::group_by(ecological_group) |>
+  dplyr::summarise(
+    records = dplyr::n(),
+    species = dplyr::n_distinct(species_accepted),
+    families = dplyr::n_distinct(family, na.rm = TRUE),
+    years = dplyr::n_distinct(year_analysis),
+    first_year = min(year_analysis),
+    last_year = max(year_analysis),
+    .groups = "drop"
+  )
+
+file_reef <- file.path(
+  paths$cin,
+  sprintf(
+    "obis_reef_fishes_%d_%d.csv",
+    min(years),
+    max(years)
+  )
+)
+
+obis_write_csv(reef_fishes, file_reef)
+
+obis_write_csv(
+  reef_summary,
+  file.path(paths$tab, "13_reef_fishes_summary.csv")
+)
+
+print(reef_summary)
+
+cat(
+  "\n",
+  "============================================\n",
+  " OBIS | ENSAMBLAJE FOCAL SELECCIONADO\n",
+  "============================================\n",
+  " Ocurrencias : ", nrow(reef_fishes), "\n",
+  " Especies    : ",
+  dplyr::n_distinct(reef_fishes$species_accepted), "\n",
+  " Familias    : ",
+  dplyr::n_distinct(reef_fishes$family, na.rm = TRUE), "\n",
+  " Años        : ",
+  dplyr::n_distinct(reef_fishes$year_analysis), "\n",
+  " Archivo     : ", file_reef, "\n",
+  "============================================\n",
+  sep = ""
+)
+```
+
+## 13. Estructura y continuidad del proyecto
+
+El proyecto se organiza en cinco etapas, desde la adquisición y selección de registros de biodiversidad marina hasta la evaluación de las relaciones entre la diversidad de peces arrecifales y la variabilidad oceanográfica del archipiélago de Galápagos.
+
+| Etapa | Documento | Objetivo | Producto principal |
+|------------------|------------------|------------------|------------------|
+| **01** | `01_obis_seleccion_taxonomica.qmd` | Adquisición, depuración, análisis exploratorio y selección del ensamblaje arrecifal. | Base estandarizada de ocurrencias de peces arrecifales y especies con asociación arrecifal variable. |
+| **02** | `02_reef_fishes_characterization.qmd` | Caracterización taxonómica, espacial, temporal y metodológica del ensamblaje seleccionado. | Base analítica con unidades de muestreo comparables, estaciones, eventos y bioregiones. |
+| **03** | `03_reef_fishes_diversity.qmd` | Evaluación de la completitud del muestreo, rarefacción, diversidad alfa y beta, recambio de especies y anidamiento. | Indicadores de diversidad taxonómica y cambios en la composición de los ensamblajes. |
+| **04** | `04_reef_fishes_oceanography.qmd` | Caracterización de la variabilidad oceanográfica y extracción espacio-temporal de covariables ambientales. | Base integrada de variables oceanográficas asociadas a las unidades de muestreo. |
+| **05** | `05_reef_fishes_environment.qmd` | Evaluación de las relaciones entre diversidad, composición comunitaria y variabilidad ambiental mediante modelos estadísticos. | Modelos ecológicos, evaluación de hipótesis y resultados para la elaboración del artículo científico. |
+
+: Estructura del proyecto sobre la diversidad de peces arrecifales y su relación con la variabilidad oceanográfica en el archipiélago de Galápagos.
+
+
+```{mermaid}
+%%| label: fig-project-workflow
+%%| fig-cap: "Flujo metodológico del proyecto de investigación."
+%%| fig-width: 8
+%%| fig-align: center
+%%| echo: false
+
+flowchart TD
+
+    A["QMD 01 - Adquisición y selección taxonómica"]
+    B["QMD 02 - Caracterización del ensamblaje arrecifal"]
+    C["QMD 03 - Evaluación de la diversidad"]
+    D["QMD 04 - Caracterización oceanográfica"]
+    E["QMD 05 - Modelamiento ecológico-ambiental"]
+
+    A --> B
+    B --> C
+    B --> D
+    C --> E
+    D --> E
+
+    style A fill:#D4EFDF,stroke:#196F3D,color:#000000
+    style B fill:#F2F3F4,stroke:#566573,color:#000000
+    style C fill:#F2F3F4,stroke:#566573,color:#000000
+    style D fill:#F2F3F4,stroke:#566573,color:#000000
+    style E fill:#D6EAF8,stroke:#21618C,color:#000000
+```
+
+
+### Referencias
+
+- Bonnet-Lebrun, A.-S., Sweetlove, M., Griffiths, H. J., Sumner, M., Provoost, P., Raymond, B., Ropert-Coudert, Y., & Van de Putte, A. P. (2023). Opportunities and limitations of large open biodiversity occurrence databases in the context of a Marine Ecosystem Assessment of the Southern Ocean. *Frontiers in Marine Science, 10*, Article 1150603. https://doi.org/10.3389/fmars.2023.1150603
+
+- Bruneel, S., Van Echelpoel, W., Ho, L., Raat, H., Schoeters, A., De Troyer, N., Sor, R., Ponton-Cevallos, J., Vandeputte, R., Van der Heyden, C., De Saeyer, N., Forio, M. A. E., Bermudez, R., Dominguez-Granda, L., Luca, S., Moens, T., & Goethals, P. (2021). Assessing the drivers behind the structure and diversity of fish assemblages associated with rocky shores in the Galapagos Archipelago. *Journal of Marine Science and Engineering, 9*(4), Article 375. https://doi.org/10.3390/jmse9040375
+
+- Chao, A., & Jost, L. (2012). Coverage-based rarefaction and extrapolation: Standardizing samples by completeness rather than size. *Ecology, 93*(12), 2533–2547. https://doi.org/10.1890/11-1952.1
+
+- Edgar, G. J., Banks, S., Fariña, J. M., Calvopiña, M., & Martínez, C. (2004). Regional biogeography of shallow reef fish and macro-invertebrate communities in the Galapagos archipelago. *Journal of Biogeography, 31*(7), 1107–1124. https://doi.org/10.1111/j.1365-2699.2004.01055.x
+
+- Froese, R., & Pauly, D. (Eds.). (s. f.). *FishBase*. World Wide Web electronic publication. https://www.fishbase.org
+
+- Fundación Charles Darwin. (2023). *Galapagos Subtidal Biodiversity* \[Conjunto de datos de ocurrencias\]. Global Biodiversity Information Facility (GBIF). https://doi.org/10.15468/gsa458
+
+- Fundación Charles Darwin. (s. f.). *Galapagos Species Database*. DataZone. https://datazone.darwinfoundation.org/es/checklist/
+
+- Hsieh, T. C., Ma, K. H., & Chao, A. (2016). iNEXT: An R package for rarefaction and extrapolation of species diversity (Hill numbers). *Methods in Ecology and Evolution, 7*(12), 1451–1456. https://doi.org/10.1111/2041-210X.12613
+
+- McKinley, S. J., Saunders, B. J., Rastoin-Laplane, E., Salinas-de-León, P., & Harvey, E. S. (2022). Functional diversity of reef fish assemblages in the Galapagos Archipelago. *Journal of Experimental Marine Biology and Ecology, 549*, Article 151695. https://doi.org/10.1016/j.jembe.2022.151695
+
+- McKinley, S. J., Saunders, B. J., Rastoin-Laplane, E., Salinas-de-León, P., & Harvey, E. S. (2023). Functional vulnerability and biogeography of reef fish assemblages in the Galapagos Archipelago. *Estuarine, Coastal and Shelf Science, 286*, Article 108301. https://doi.org/10.1016/j.ecss.2023.108301
+
+- Menegotto, A., & Rangel, T. F. (2018). Mapping knowledge gaps in marine diversity reveals a latitudinal gradient of missing species richness. *Nature Communications, 9*, Article 4713. https://doi.org/10.1038/s41467-018-07217-7
+
+- Moity, N. (2019). *Marine bioregions for coastal subtidal shallow rocky reef of the Galapagos Archipelago, GIS layer for Edgar et al. 2004* \[Conjunto de datos geoespaciales\]. PANGAEA. https://doi.org/10.1594/PANGAEA.907105
+
+- Mora, C., Tittensor, D. P., & Myers, R. A. (2008). The completeness of taxonomic inventories for describing the global diversity and distribution of marine fishes. *Proceedings of the Royal Society B: Biological Sciences, 275*, 149–155. https://doi.org/10.1098/rspb.2007.1315
+
+- Natural Earth. (s. f.). *Natural Earth: 1:10m physical vectors – Land* \[Conjunto de datos cartográficos\]. https://www.naturalearthdata.com
 
 - Ocean Biodiversity Information System (OBIS). (s. f.). *Data access*. En *The OBIS manual*. https://manual.obis.org/access
 
@@ -586,17 +1632,16 @@ cat(
 
 - Ocean Biodiversity Information System (OBIS). (s. f.). *Occurrence: Get occurrence records*. En *robis reference*. https://iobis.github.io/robis/reference/occurrence.html
 
-- Bonnet-Lebrun, A.-S., Sweetlove, M., Griffiths, H. J., Sumner, M., Provoost, P., Raymond, B., Ropert-Coudert, Y., & Van de Putte, A. P. (2023). Opportunities and limitations of large open biodiversity occurrence databases in the context of a Marine Ecosystem Assessment of the Southern Ocean. *Frontiers in Marine Science, 10*, Article 1150603. https://doi.org/10.3389/fmars.2023.1150603
+- Rastoin-Laplane, E., Salinas-de-León, P., Goetze, J. S., Saunders, B. J., McKinley, S. J., Norris, C., Gosby, C., Mattingly, A., Garcia, R., & Harvey, E. S. (2023). Fluctuations of Galapagos mid-water and benthic reef fish populations during the 2015–16 ENSO. *Estuarine, Coastal and Shelf Science, 294*, Article 108523. https://doi.org/10.1016/j.ecss.2023.108523
 
-- Menegotto, A., & Rangel, T. F. (2018). Mapping knowledge gaps in marine diversity reveals a latitudinal gradient of missing species richness. *Nature Communications, 9*, Article 4713. https://doi.org/10.1038/s41467-018-07217-7
-
-- Mora, C., Tittensor, D. P., & Myers, R. A. (2008). The completeness of taxonomic inventories for describing the global diversity and distribution of marine fishes. *Proceedings of the Royal Society B: Biological Sciences, 275*, 149–155. https://doi.org/10.1098/rspb.2007.1315
+- Riofrío-Lazo, M., Zetina-Rejón, M. J., Vaca-Pita, L., Murillo-Posada, J. C., & Páez-Rosas, D. (2022). Fish diversity patterns along coastal habitats of the southeastern Galapagos archipelago and their relationship with environmental variables. *Scientific Reports, 12*, Article 3604. https://doi.org/10.1038/s41598-022-07601-w
 
 - Saeedi, H. (2026). Gaps and drivers of global marine animal biodiversity from the surface to abyss. *Nature Communications, 17*, Article 4553. https://doi.org/10.1038/s41467-026-73613-z
 
+- Smithsonian Tropical Research Institute (STRI). (s. f.). *Shorefishes of the Eastern Pacific: Online information system*. https://biogeodb.stri.si.edu/sftep/en/pages/generalinfo
+
 - Vandepitte, L., Bosch, S., Tyberghein, L., Waumans, F., Vanhoorne, B., Hernandez, F., De Clerck, O., & Mees, J. (2015). Fishing for data and sorting the catch: Assessing the data quality, completeness and fitness for use of data in marine biogeographic databases. *Database, 2015*, Article bau125. https://doi.org/10.1093/database/bau125
 
-- Chao, A., & Jost, L. (2012). Coverage-based rarefaction and extrapolation: Standardizing samples by completeness rather than size. *Ecology, 93*(12), 2533–2547. https://doi.org/10.1890/11-1952.1
+- Victor, B. C., Grove, J. S., Long, D. J., Robertson, D. R., Keith, I., Bensted-Smith, W., & Salinas-de-Leon, P. (2026). List of fishes of the Galapagos Archipelago, Ecuador (Version 3.0). *Journal of the Ocean Science Foundation, 46*, 15–62. https://doi.org/10.5281/zenodo.20483239
 
-- Hsieh, T. C., Ma, K. H., & Chao, A. (2016). iNEXT: An R package for rarefaction and extrapolation of species diversity (Hill numbers). *Methods in Ecology and Evolution, 7*(12), 1451–1456. https://doi.org/10.1111/2041-210X.12613
-
+- WoRMS Editorial Board. (s. f.). *World Register of Marine Species*. https://www.marinespecies.org

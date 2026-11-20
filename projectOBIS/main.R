@@ -530,7 +530,7 @@ obis_plot_spatial_facets <- function(annual, rank_value,
       # subtitle = "Orden de facetas: mayor a menor total de registros",
       x = NULL, y = label_y[[metric]]
     ) +
-    ggplot2::theme_bw(base_size = 12) +
+    ggplot2::theme_bw(base_size = 18) +
     ggplot2::theme(
       strip.text = ggplot2::element_text(face = "bold"),
       plot.title = ggplot2::element_text(face = "bold")
@@ -1639,4 +1639,437 @@ obis_assert_functions <- function(names_expected, env = parent.frame()) {
          call. = FALSE)
   }
   invisible(TRUE)
+}
+
+# =============================================================================
+# OHWe 2026 | Caracterizacion espacial-temporal y taxonomica de Teleostei
+# Funciones independientes del QMD 01. No modifican datos originales.
+# =============================================================================
+
+#' Verifica campos esenciales y convierte tipos sin cambiar la taxonomia.
+#' Entradas: data.frame OBIS; devuelve tabla con variables derivadas y banderas.
+tel_prepare <- function(x, p) {
+  need <- c('class','family','genus','species_accepted','year_analysis',
+            'month_analysis','decimalLongitude','decimalLatitude','dataset_id','eventID')
+  missing <- setdiff(need, names(x))
+  if (length(missing)) stop('Columnas ausentes: ', paste(missing, collapse=', '))
+  if (!is.numeric(p$grid_res) || length(p$grid_res)!=1 || !is.finite(p$grid_res) || p$grid_res<=0) stop('grid_res invalido')
+  numeric_cols <- c('year_analysis','month_analysis','decimalLongitude','decimalLatitude',
+                    'depth','minimumDepthInMeters','maximumDepthInMeters','coordinateUncertaintyInMeters')
+  for (nm in intersect(numeric_cols, names(x))) x[[nm]] <- suppressWarnings(as.numeric(x[[nm]]))
+  x <- dplyr::filter(x, .data$class == 'Teleostei',
+                     !is.na(.data$species_accepted), trimws(.data$species_accepted)!='',
+                     is.finite(.data$decimalLongitude), is.finite(.data$decimalLatitude),
+                     .data$decimalLongitude >= p$lon_min, .data$decimalLongitude <= p$lon_max,
+                     .data$decimalLatitude >= p$lat_min, .data$decimalLatitude <= p$lat_max,
+                     .data$year_analysis >= p$year_start, .data$year_analysis <= p$year_end)
+  x <- dplyr::mutate(x,
+                     dataset_key = dplyr::coalesce(dplyr::na_if(trimws(as.character(.data$dataset_id)),''),
+                                                   dplyr::na_if(trimws(as.character(.data$datasetID)),''),'SIN_ID'),
+                     event_key = dplyr::if_else(!is.na(.data$eventID) & trimws(.data$eventID) != '',
+                                                paste(.data$dataset_key, .data$eventID, sep='|'), NA_character_),
+                     cell_x = pmin(ceiling((p$lon_max-p$lon_min)/p$grid_res)-1L,
+                                   pmax(0L, floor((.data$decimalLongitude-p$lon_min)/p$grid_res))),
+                     cell_y = pmin(ceiling((p$lat_max-p$lat_min)/p$grid_res)-1L,
+                                   pmax(0L, floor((.data$decimalLatitude-p$lat_min)/p$grid_res))),
+                     cell_id = sprintf('C%03d_%03d', .data$cell_x, .data$cell_y),
+                     cell_lon = p$lon_min + (.data$cell_x+.5)*p$grid_res,
+                     cell_lat = p$lat_min + (.data$cell_y+.5)*p$grid_res)
+  x
+}
+
+#' Devuelve tabla de cobertura de campos y calidad, incluyendo profundidad y eventos.
+tel_field_audit <- function(x) {
+  vars <- c('year_analysis','month_analysis','day_analysis','eventDate','family','genus',
+            'species_accepted','eventID','samplingProtocol','depth','minimumDepthInMeters',
+            'maximumDepthInMeters','coordinateUncertaintyInMeters','individualCount')
+  vars <- intersect(vars,names(x))
+  tibble::tibble(variable=vars, n_total=nrow(x), n_present=vapply(vars, function(v) {
+    y <- x[[v]]; sum(!is.na(y) & trimws(as.character(y))!='')
+  },integer(1))) |>
+    dplyr::mutate(pct_present = 100*.data$n_present/pmax(1,.data$n_total))
+}
+
+#' Rankeos por taxon; registros NO son abundancia.
+tel_taxon_ranks <- function(x, ranks=c('order','family','genus','species_accepted')) {
+  dplyr::bind_rows(lapply(ranks, function(rank) {
+    x |>
+      dplyr::mutate(taxon=trimws(as.character(.data[[rank]]))) |>
+      dplyr::filter(!is.na(.data$taxon), .data$taxon!='') |>
+      dplyr::group_by(.data$taxon) |>
+      dplyr::summarise(records=dplyr::n(),species=dplyr::n_distinct(.data$species_accepted),
+                       years=dplyr::n_distinct(.data$year_analysis), cells=dplyr::n_distinct(.data$cell_id),
+                       datasets=dplyr::n_distinct(.data$dataset_key),.groups='drop') |>
+      dplyr::mutate(rank=rank)
+  })) |>
+    dplyr::group_by(.data$rank) |>
+    dplyr::arrange(dplyr::desc(.data$records), .data$taxon, .by_group=TRUE) |>
+    dplyr::mutate(rank_order=dplyr::row_number()) |>
+    dplyr::ungroup()
+}
+
+#' Cobertura de registros y riqueza por ano, mes, ano-mes, y profundidad disponible.
+tel_time_tables <- function(x, years) {
+  annual <- x |>
+    dplyr::group_by(.data$year_analysis) |>
+    dplyr::summarise(records=dplyr::n(), richness=dplyr::n_distinct(.data$species_accepted),
+                     families=dplyr::n_distinct(.data$family,na.rm=TRUE),
+                     cells=dplyr::n_distinct(.data$cell_id),
+                     datasets=dplyr::n_distinct(.data$dataset_key), .groups='drop') |>
+    tidyr::complete(year_analysis=years)
+  monthly <- x |>
+    dplyr::filter(.data$month_analysis %in% 1:12) |>
+    dplyr::group_by(.data$month_analysis) |>
+    dplyr::summarise(records=dplyr::n(),richness=dplyr::n_distinct(.data$species_accepted),.groups='drop') |>
+    tidyr::complete(month_analysis=1:12)
+  yearmonth <- x |>
+    dplyr::filter(.data$month_analysis %in% 1:12) |>
+    dplyr::group_by(.data$year_analysis,.data$month_analysis) |>
+    dplyr::summarise(records=dplyr::n(), richness=dplyr::n_distinct(.data$species_accepted),.groups='drop') |>
+    tidyr::complete(year_analysis=years,month_analysis=1:12)
+  list(annual=annual,monthly=monthly,yearmonth=yearmonth)
+}
+
+#' Resumen de los datasets y fraccion dominante para cada ano y celda.
+tel_source_tables <- function(x) {
+  by_dataset <- x |>
+    dplyr::group_by(.data$dataset_key) |>
+    dplyr::summarise(records=dplyr::n(), species=dplyr::n_distinct(.data$species_accepted),
+                     years=dplyr::n_distinct(.data$year_analysis), cells=dplyr::n_distinct(.data$cell_id),.groups='drop') |>
+    dplyr::arrange(dplyr::desc(.data$records)) |>
+    dplyr::mutate(share=.data$records/sum(.data$records))
+  by_year <- x |>
+    dplyr::count(.data$year_analysis,.data$dataset_key,name='records') |>
+    dplyr::group_by(.data$year_analysis) |>
+    dplyr::mutate(share=.data$records/sum(.data$records)) |>
+    dplyr::ungroup()
+  list(by_dataset=by_dataset,by_year=by_year)
+}
+
+#' Celdas por ano: informacion documental y riqueza observada.
+tel_cell_tables <- function(x) {
+  annual <- x |>
+    dplyr::group_by(.data$year_analysis,.data$cell_id,.data$cell_lon,.data$cell_lat) |>
+    dplyr::summarise(records=dplyr::n(),richness=dplyr::n_distinct(.data$species_accepted),
+                     families=dplyr::n_distinct(.data$family, na.rm=TRUE),
+                     genera=dplyr::n_distinct(.data$genus,na.rm=TRUE),
+                     datasets=dplyr::n_distinct(.data$dataset_key),
+                     events=dplyr::n_distinct(.data$event_key,na.rm=TRUE),
+                     .groups='drop')
+  cumulative <- x |>
+    dplyr::group_by(.data$cell_id,.data$cell_lon,.data$cell_lat) |>
+    dplyr::summarise(records=dplyr::n(),richness=dplyr::n_distinct(.data$species_accepted),
+                     families=dplyr::n_distinct(.data$family,na.rm=TRUE),
+                     years=dplyr::n_distinct(.data$year_analysis),
+                     datasets=dplyr::n_distinct(.data$dataset_key),.groups='drop')
+  list(annual=annual,cumulative=cumulative)
+}
+
+#' Mapa de celdas documentadas; las celdas blancas NO son ausencias.
+tel_map <- function(d,p,value,title,log_fill=FALSE) {
+  stopifnot(value %in% names(d))
+  g <- ggplot2::ggplot(d,ggplot2::aes(x=.data$cell_lon,y=.data$cell_lat,fill=.data[[value]])) +
+    ggplot2::geom_tile(width=p$grid_res,height=p$grid_res) +
+    ggplot2::scale_fill_viridis_c(trans=if (log_fill) 'log1p' else 'identity',na.value='grey90') +
+    ggplot2::labs(title=title,x='Longitud (°)',y='Latitud (°)',fill=value,
+                  subtitle='Celdas sin registros = sin información, no ausencia') +
+    cowplot::theme_cowplot(font_size=11)
+  if (requireNamespace('sf',quietly=TRUE) && requireNamespace('rnaturalearth',quietly=TRUE)) {
+    coast <- tryCatch(rnaturalearth::ne_countries(scale='medium',returnclass='sf'),error=function(e) NULL)
+    if (!is.null(coast)) {
+      g <- g + ggplot2::geom_sf(data=coast,inherit.aes=FALSE,fill='grey92',colour='grey35',linewidth=.18) +
+        ggplot2::coord_sf(xlim=c(p$lon_min,p$lon_max),ylim=c(p$lat_min,p$lat_max),expand=FALSE)
+      return(g)
+    }
+  }
+  g + ggplot2::coord_fixed(xlim=c(p$lon_min,p$lon_max),ylim=c(p$lat_min,p$lat_max),expand=FALSE)
+}
+
+#' Mapa de anos disponibles; anios con cero datos no se generan como ausencias.
+tel_map_years <- function(annual,p,years,value='records') {
+  d <- dplyr::filter(annual,.data$year_analysis %in% .env$years)
+  if (!nrow(d)) return(NULL)
+  tel_map(d,p,value,paste('Teleostei por celda y ano:',value),value=='records') +
+    ggplot2::facet_wrap(~year_analysis,ncol=2)
+}
+
+#' Mapas taxonomicos de la riqueza por familia o genero; conteos de especies distintas.
+tel_taxon_grid <- function(x, rank='family', top=9L, by_year=FALSE) {
+  if (!rank %in% c('order','family','genus')) stop('rank no permitido')
+  leaders <- x |>
+    dplyr::filter(!is.na(.data[[rank]]),trimws(.data[[rank]])!='') |>
+    dplyr::count(taxon=.data[[rank]],name='records',sort=TRUE) |>
+    dplyr::slice_head(n=as.integer(top))
+  groupvars <- c('taxon','cell_id','cell_lon','cell_lat',if(by_year)'year_analysis')
+  x |>
+    dplyr::mutate(taxon=as.character(.data[[rank]])) |>
+    dplyr::filter(.data$taxon %in% .env$leaders$taxon) |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(groupvars))) |>
+    dplyr::summarise(records=dplyr::n(),richness=dplyr::n_distinct(.data$species_accepted),.groups='drop') |>
+    dplyr::mutate(taxon=factor(.data$taxon,levels=leaders$taxon))
+}
+
+#' Tabla por estrato de profundidad observada. No representa habitat vertical.
+tel_depth <- function(x, breaks=c(0,10,30,100,200,500,1000,Inf)) {
+  # Algunos registros tienen depth pero no profundidad minima/maxima.
+  z <- dplyr::coalesce(x$depth,x$minimumDepthInMeters,x$maximumDepthInMeters)
+  d <- dplyr::mutate(x, depth_m=z) |>
+    dplyr::filter(!is.na(.data$depth_m),is.finite(.data$depth_m),.data$depth_m>=0)
+  d <- dplyr::mutate(d,depth_bin=cut(.data$depth_m,breaks=breaks,right=FALSE,include.lowest=TRUE))
+  list(summary=d |>
+         dplyr::group_by(.data$depth_bin) |>
+         dplyr::summarise(records=dplyr::n(),richness=dplyr::n_distinct(.data$species_accepted),
+                          datasets=dplyr::n_distinct(.data$dataset_key),.groups='drop'),
+       data=d,
+       coverage=tibble::tibble(total=nrow(x),with_depth=nrow(d),fraction=nrow(d)/max(1,nrow(x))))
+}
+
+#' Rarefaccion de riqueza observada por unidades documentales: curva hipergeometrica.
+#' NO es rarefaccion de individuos. El resultado es condicional a registros OBIS.
+tel_record_curve <- function(species,n_points=50L) {
+  freq <- as.numeric(table(species[!is.na(species) & species!='']))
+  N <- sum(freq)
+  if (N<2L) return(tibble::tibble(n_records=integer(),richness_expected=numeric(),
+                                  richness_fraction=numeric()))
+  ngrid <- sort(unique(pmax(1L, as.integer(round(seq(1,N,length.out=min(N,n_points)))))))
+  s <- vapply(ngrid,function(n) {
+    # P(no recuperar una especie) = choose(N-f_i,n)/choose(N,n)
+    missing_prob <- ifelse(N-freq>=n,exp(lchoose(pmax(N-freq,n),n)-lchoose(N,n)),0)
+    sum(1-missing_prob)
+  },numeric(1))
+  tibble::tibble(n_records=ngrid,richness_expected=s,
+                 richness_fraction=s/length(freq))
+}
+
+#' Curvas por ano y dominio, con referencia a riqueza documentada, no verdadera.
+tel_domain_rarefaction <- function(x,years,n_points=50L) {
+  dplyr::bind_rows(lapply(years,function(y) {
+    d <- x[x$year_analysis==y,,drop=FALSE]
+    if(nrow(d)<2L) return(NULL)
+    tel_record_curve(d$species_accepted,n_points) |>
+      dplyr::mutate(year_analysis=y,N=nrow(d),S=dplyr::n_distinct(d$species_accepted))
+  }))
+}
+
+#' N90/N95 y riqueza estandarizada a una cuota de registros, por celda/ano.
+#' Las celdas no documentadas no se introducen con riqueza cero.
+tel_cell_rarefaction <- function(x,min_records=20L,quota=20L,n_points=35L) {
+  groups <- split(seq_len(nrow(x)),interaction(x$year_analysis,x$cell_id,drop=TRUE))
+  rows <- lapply(groups,function(idx) {
+    z <- x[idx,,drop=FALSE]
+    N <- nrow(z); S <- dplyr::n_distinct(z$species_accepted)
+    curve <- if(N>=2L) tel_record_curve(z$species_accepted,n_points) else NULL
+    # Calculo exacto de la cuota: no sustituir por interpolacion gruesa.
+    quota_est <- if(N>=quota) {
+      f <- as.numeric(table(z$species_accepted))
+      miss <- ifelse(N-f>=quota,exp(lchoose(pmax(N-f,quota),quota)-lchoose(N,quota)),0)
+      sum(1-miss)
+    } else NA_real_
+    threshold <- function(target) {
+      if(is.null(curve) || N<min_records || S<2L) return(NA_integer_)
+      # Refinar el primer cruce con biseccion discreta sin recorrer todos los n.
+      ff <- as.numeric(table(z$species_accepted))
+      rich <- function(n) sum(1-ifelse(N-ff>=n,exp(lchoose(pmax(N-ff,n),n)-lchoose(N,n)),0))
+      left<-1L; right<-as.integer(N)
+      while(left<right) {mid<-as.integer(floor((left+right)/2)); if(rich(mid)>=target*S) right<-mid else left<-mid+1L}
+      left
+    }
+    tibble::tibble(year_analysis=z$year_analysis[1],cell_id=z$cell_id[1],
+                   cell_lon=z$cell_lon[1],cell_lat=z$cell_lat[1],
+                   records=N,richness=S,rarefied_richness=quota_est,
+                   N90=threshold(.90),N95=threshold(.95),
+                   status=if(N<min_records)'BAJO_N' else if(S<2L)'UNA_ESPECIE' else 'EVALUABLE')
+  })
+  dplyr::bind_rows(rows)
+}
+
+#' Curvas de riqueza acumulada por celdas en orden aleatorio (no corrigen sesgo de muestreo).
+tel_cell_accumulation <- function(x,n_perm=100L,seed=2026L) {
+  sets <- split(x$species_accepted,x$cell_id)
+  sets <- lapply(sets,unique)
+  K <- length(sets)
+  if(K<2) return(tibble::tibble())
+  set.seed(seed)
+  m <- matrix(NA_real_,nrow=n_perm,ncol=K)
+  for(j in seq_len(n_perm)) {
+    pool<-character()
+    for(k in seq_len(K)) {
+      # Orden nuevo en cada permutacion
+      if(k==1L) order<-sample.int(K)
+      pool<-union(pool,sets[[order[k]]])
+      m[j,k]<-length(pool)
+    }
+  }
+  tibble::tibble(cells=seq_len(K),richness_mean=colMeans(m),
+                 lower=apply(m,2,stats::quantile,.025),upper=apply(m,2,stats::quantile,.975),
+                 observed_richness=length(unique(x$species_accepted)))
+}
+
+#' Incidencias por evento verdadero, si hay suficientes IDs del mismo dataset.
+tel_event_audit <- function(x) {
+  x |>
+    dplyr::group_by(.data$dataset_key,.data$year_analysis) |>
+    dplyr::summarise(records=dplyr::n(),records_with_event=sum(!is.na(.data$event_key)),
+                     events=dplyr::n_distinct(.data$event_key,na.rm=TRUE),
+                     species=dplyr::n_distinct(.data$species_accepted),.groups='drop') |>
+    dplyr::mutate(event_fraction=.data$records_with_event/pmax(1,.data$records)) |>
+    dplyr::arrange(dplyr::desc(.data$records))
+}
+
+#' Diferencias de composicion por pares de celdas, mismo periodo; sin inferir ausencia.
+#' Sorensen y particion de Baselga para presencia DOCUMENTADA.
+tel_beta_cells <- function(x,max_cells=80L,min_records=20L) {
+  counts <- dplyr::count(x,.data$cell_id,name='records') |>
+    dplyr::filter(.data$records>=min_records) |>
+    dplyr::arrange(dplyr::desc(.data$records)) |>
+    dplyr::slice_head(n=as.integer(max_cells))
+  if(nrow(counts)<2L) return(tibble::tibble())
+  d <- x |>
+    dplyr::filter(.data$cell_id %in% .env$counts$cell_id) |>
+    dplyr::distinct(.data$cell_id,.data$species_accepted)
+  sets <- split(as.character(d$species_accepted),d$cell_id)
+  cmb <- utils::combn(names(sets),2,simplify=FALSE)
+  dplyr::bind_rows(lapply(cmb,function(ab) {
+    a <- sets[[ab[1]]]; b <- sets[[ab[2]]]
+    shared <- length(intersect(a,b)); b_only<-length(setdiff(a,b)); c_only<-length(setdiff(b,a))
+    den <- 2*shared+b_only+c_only
+    sor <- if(den>0) (b_only+c_only)/den else NA_real_
+    sim <- if(shared+min(b_only,c_only)>0) min(b_only,c_only)/(shared+min(b_only,c_only)) else NA_real_
+    tibble::tibble(cell_a=ab[1],cell_b=ab[2],sorensen=sor,turnover=sim,
+                   nestedness=if(is.finite(sor)&&is.finite(sim)) sor-sim else NA_real_,
+                   shared_species=shared)
+  }))
+}
+
+#' Plot estandar tipo cowplot (se puede encadenar con temas adicionales).
+tel_theme <- function() cowplot::theme_cowplot(font_size=11)
+
+#' Mapas agregados por mes calendario; la composicion mensual agrega anos distintos.
+tel_month_grid <- function(x) {
+  x |>
+    dplyr::filter(.data$month_analysis %in% 1:12) |>
+    dplyr::group_by(.data$month_analysis,.data$cell_id,.data$cell_lon,.data$cell_lat) |>
+    dplyr::summarise(records=dplyr::n(),richness=dplyr::n_distinct(.data$species_accepted),
+                     years=dplyr::n_distinct(.data$year_analysis),.groups='drop')
+}
+
+#' Rarefaccion por incidencia de eventos dentro de un dataset y ano.
+#' Se usa iNEXT solo cuando sus supuestos de eventos y protocolos son defendibles.
+tel_event_rarefaction <- function(x, min_events=10L, max_groups=4L) {
+  if (!requireNamespace('iNEXT',quietly=TRUE)) return(list(audit=tibble::tibble(), plots=list()))
+  d <- x |>
+    dplyr::filter(!is.na(.data$event_key),!is.na(.data$species_accepted))
+  candidates <- d |>
+    dplyr::distinct(.data$dataset_key,.data$year_analysis,.data$event_key) |>
+    dplyr::count(.data$dataset_key,.data$year_analysis,name='events') |>
+    dplyr::filter(.data$events>=min_events) |>
+    dplyr::arrange(dplyr::desc(.data$events)) |>
+    dplyr::slice_head(n=as.integer(max_groups))
+  plots<-list(); audits<-list()
+  for(i in seq_len(nrow(candidates))) {
+    ds <- candidates$dataset_key[i]; yr<-candidates$year_analysis[i]
+    z <- d |>
+      dplyr::filter(.data$dataset_key==.env$ds,.data$year_analysis==.env$yr) |>
+      dplyr::distinct(.data$event_key,.data$species_accepted)
+    nsp<-dplyr::n_distinct(z$species_accepted)
+    status<-'INSUFICIENTE'
+    if(nsp>=3L) {
+      m<-stats::xtabs(~species_accepted+event_key,data=z)
+      m <- 1L*(as.matrix(m)>0L)
+      fit<-tryCatch(iNEXT::iNEXT(m,q=0,datatype='incidence_raw',nboot=0,knots=30),error=identity)
+      if(inherits(fit,'error')) status<-paste('ERROR',conditionMessage(fit)) else {
+        status<-'CURVA_GENERADA'
+        g<-iNEXT::ggiNEXT(fit,type=1) + tel_theme() +
+          ggplot2::labs(title=paste('Incidencia por eventos -',yr),
+                        subtitle=paste('Dataset:',ds),x='Eventos',y='Riqueza de especies')
+        plots[[paste0('ds_',i,'_year_',yr)]]<-g
+      }
+    }
+    audits[[i]]<-tibble::tibble(dataset_key=ds,year_analysis=yr,
+                                events=candidates$events[i],species=nsp,status=status)
+  }
+  list(audit=dplyr::bind_rows(audits),plots=plots)
+}
+
+
+# =============================================================================
+# EXTENSION III | ENSAMBLAJE ASOCIADO A ARRECIFES Y FONDOS ROCOSOS
+# Se agrega sin modificar funciones previas (QMD 01 y antiguos QMD 02).
+# =============================================================================
+
+#' Familias focales PRELIMINARES. No reemplaza una clasificación especie a especie.
+#' No son taxones exclusivamente arrecifales. Registrar evaluación ecológica posterior.
+tel_reef_families <- function() {
+  c('Labridae','Pomacentridae','Epinephelidae','Scaridae','Blenniidae',
+    'Pomacanthidae','Balistidae','Cirrhitidae','Chaetodontidae','Acanthuridae')
+}
+
+#' Filtra el núcleo conservador sin alterar ninguna columna de origen.
+tel_reef_filter <- function(x, families=tel_reef_families()) {
+  stopifnot(is.data.frame(x), 'family' %in% names(x))
+  dplyr::filter(x,!is.na(.data$family),trimws(as.character(.data$family)) %in% families)
+}
+
+#' Cuenta registros, especies y fuentes en el dominio original, núcleo y región focal.
+#' Permite auditar objetivamente las pérdidas por la ventana espacial elegida.
+tel_reef_domain_audit <- function(full, reef, focus, p_focus) {
+  summary_row <- function(x, stage) {
+    tibble::tibble(etapa=stage,registros=nrow(x),
+      especies=dplyr::n_distinct(x$species_accepted,na.rm=TRUE),
+      familias=dplyr::n_distinct(x$family,na.rm=TRUE),
+      anios=dplyr::n_distinct(x$year_analysis,na.rm=TRUE),
+      datasets=dplyr::n_distinct(x$dataset_key,na.rm=TRUE))
+  }
+  dplyr::bind_rows(summary_row(full,'teleostei_dominio_original'),
+                   summary_row(reef,'nucleo_arrecifal_dominio_original'),
+                   summary_row(focus,'nucleo_arrecifal_dominio_focal')) |>
+    dplyr::mutate(fraccion_de_teleostei=.data$registros/max(1,nrow(full)),
+      fraccion_del_nucleo=.data$registros/max(1,nrow(reef)),
+      ventana=paste(p_focus$lon_min,p_focus$lon_max,p_focus$lat_min,p_focus$lat_max,sep=';'))
+}
+
+#' Tabla especie-familia para revisión explícita de uso de hábitat, no automática.
+tel_reef_species_review <- function(x) {
+  x |>
+    dplyr::group_by(.data$family,.data$genus,.data$species_accepted) |>
+    dplyr::summarise(registros=dplyr::n(),
+      anios=dplyr::n_distinct(.data$year_analysis),
+      celdas=dplyr::n_distinct(.data$cell_id),
+      datasets=dplyr::n_distinct(.data$dataset_key),.groups='drop') |>
+    dplyr::arrange(dplyr::desc(.data$registros)) |>
+    dplyr::mutate(afinidad_habitat_por_validar='POR_VALIDAR',
+      decision_inclusion='PROVISIONAL')
+}
+
+#' Resumen por resolución usando coordenadas sin redondear ni mover puntos.
+#' IMPORTANTE: al cambiar grilla, la resolución no valida una comparabilidad ecológica.
+tel_reef_grid_sensitivity <- function(x,p,resolutions=c(.25,.5,1)) {
+  dplyr::bind_rows(lapply(resolutions,function(res) {
+    nx <- ceiling((p$lon_max-p$lon_min)/res)
+    ny <- ceiling((p$lat_max-p$lat_min)/res)
+    ix <- pmin(nx-1L,pmax(0L,floor((x$decimalLongitude-p$lon_min)/res)))
+    iy <- pmin(ny-1L,pmax(0L,floor((x$decimalLatitude-p$lat_min)/res)))
+    d <- x |>
+      dplyr::mutate(cell_grid=paste(ix,iy,sep='_')) |>
+      dplyr::count(.data$year_analysis,.data$cell_grid,name='registros')
+    tibble::tibble(resolucion_grados=res,
+      celdas_geometricas=nx*ny,celdas_con_registros=dplyr::n_distinct(d$cell_grid),
+      celdas_anio=nrow(d),celdas_anio_ge20=sum(d$registros>=20),
+      mediana_celdas_anuales=stats::median(as.numeric(table(d$year_analysis))))
+  }))
+}
+
+#' Indicadores de concentración y elegibilidad mínima descriptiva por celda-año.
+#' Los umbrales son filtros diagnósticos, NO certificaciones de inventario completo.
+tel_reef_cell_eligibility <- function(x,min_records=20L,min_species=2L) {
+  x |>
+    dplyr::group_by(.data$year_analysis,.data$cell_id,.data$cell_lon,.data$cell_lat) |>
+    dplyr::summarise(registros=dplyr::n(),especies=dplyr::n_distinct(.data$species_accepted),
+      datasets=dplyr::n_distinct(.data$dataset_key),
+      eventos_identificables=dplyr::n_distinct(.data$event_key,na.rm=TRUE),
+      dataset_dominante=max(as.numeric(table(.data$dataset_key)))/dplyr::n(),
+      .groups='drop') |>
+    dplyr::mutate(evaluable_descriptivo=.data$registros>=min_records &
+        .data$especies>=min_species,
+      precaucion_fuente_unica=.data$datasets<=1L | .data$dataset_dominante>.8)
 }
