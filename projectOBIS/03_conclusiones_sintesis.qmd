@@ -1,0 +1,435 @@
+---
+title: "Conclusiones Principales: Diversidad de Teleostei y Ambiente Oceanográfico (1993–2020)"
+subtitle: "Fase 3 — Síntesis Integrada de Resultados (Fase 1 OBIS + Fase 2 H1–H3) | Proyecto-1 OHWe 2026"
+author: "Grupo R Hackaton 2026"
+date: today
+lang: es
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+paquetes <- c("dplyr", "tidyr", "tibble", "ggplot2", "patchwork", "knitr", "kableExtra")
+faltantes <- paquetes[!(paquetes %in% installed.packages()[, "Package"])]
+if (length(faltantes) > 0) {
+  install.packages(faltantes, dependencies = TRUE, repos = "[https://cloud.r-project.org](https://cloud.r-project.org)")
+}
+invisible(lapply(paquetes, library, character.only = TRUE))
+
+theme_set(theme_minimal(base_size = 11))
+```
+
+## 1. Resumen Ejecutivo
+
+Este documento sintetiza las principales conclusiones derivadas de la **Fase 1** (`01_obis_seleccion_taxonomica.html`) y la **Fase 2** (`02_analisis_espacial_diversidad_ambiente.html`), cuyo objetivo fue evaluar la relación entre los índices de diversidad de peces óseos marinos (**`Teleostei`**) y las variables oceanográficas **Temperatura Superficial del Mar (TSM)** y **Salinidad Superficial del Mar (SSM)** durante el periodo **1993–2020** a una resolución espacial de **$0.25^\circ \times 0.25^\circ$**.
+
+::: {.callout-important}
+### Hallazgos clave del proyecto
+1. **Selección taxonómica óptima (Fase 1):** Entre las 30 clases marinas evaluadas en OBIS (`1990–2025`, `70,037` registros retenidos de `96,927` crudos), **`Teleostei`** fue el grupo más robusto (**32,245 registros**, **404 especies**, **34 años**, mediana de **15 celdas/año**). Para la ventana acoplada con datos oceanográficos (`1993–2020`), el análisis se sustentó en **24,607 registros**, **358 especies**, **27 años efectivos (`1994–2020`)** y **74 celdas activas** de $0.25^\circ$.
+2. **H1 (Diversidad alfa espacial vs. ambiente — Parcialmente apoyada, con fuerte sesgo de esfuerzo y multicolinealidad):** El modelo lineal múltiple explicó el **91.0%** de la varianza en la riqueza alfa ($R^2_{\text{aj}} = 0.910$), pero el **esfuerzo observacional** (`log10_esfuerzo`) explicó por sí solo el **89.0%** ($R^2_{\text{aj}} = 0.890$, $\rho = 1.00$). Aunque `TSM` ($p = 0.00383$) y `Salinidad` ($p = 0.0148$) resultaron significativas en el modelo conjunto, ambas presentan colinealidad extrema ($r = -0.98$, $\text{VIF} > 24$) y pierden significancia estadística al evaluarse por separado junto al esfuerzo.
+3. **H2 (Diversidad beta espacial vs. distancia ambiental — Apoyada):** Existe una asociación positiva y altamente significativa entre la disimilitud taxonómica (Beta de Jaccard) y la distancia oceanográfica estandarizada entre pares de celdas (**2,701 pares**, **Mantel Spearman $\rho = 0.335$**, **$p = 0.002$**), indicando recambio comunitario estructurado por los gradientes de TSM, salinidad y clorofila-*a*.
+4. **H3 (Variación interanual 1994–2020 — No apoyada en escala anual):** Las fluctuaciones anuales de riqueza ($S$), Shannon ($H'$) y Beta interanual no mostraron correlación significativa con TSM ni con Salinidad (TSM ERSST vs. $S$: $\rho = 0.041, p = 0.841$; Salinidad vs. $S$: $\rho = 0.083, p = 0.681$), estando dominadas por la variabilidad interanual del esfuerzo muestral (Registros vs. $S$: $\rho = 0.668, p = 0.00014$).
+5. **Tendencia oceanográfica del corredor (`1993–2020`):** Entre `2007–2020` y `1993–2006`, el **93.3%** de las `1,872` celdas del corredor (`-99° a -86° W`, `-2° a 7° N`) registró **calentamiento** (media $+0.191\ ^\circ\text{C}$ en celdas cálidas) y el **95.8%** presentó **dilución/desalinización** (media $-0.196\ \text{PSU}$ en celdas en dilución).
+6. **Limitación geográfica crítica:** El polígono biológico descargado en OBIS (`-98° a -90° W`, `-0.5° a 6.5° N`) se concentra en **Galápagos occidental** y excluye a la **Isla del Coco** (`~87.06° W, 5.53° N`), por lo que las inferencias biológicas aplican al sector occidental del corredor.
+:::
+
+---
+
+## 2. Fase 1: Depuración y Selección Taxonómica (`Teleostei` en OBIS)
+
+La descarga anual en OBIS (`1990–2025`, `36` años) recuperó **96,927 ocurrencias** en `215` columnas dentro del polígono de `896` celdas ($0.25^\circ \times 0.25^\circ$). Tras descartar registros sin identificación a nivel de especie (**16,754**; `17.3%`), alertas de tierra (**9,763**; `10.1%`) y registros sin afinidad marina confirmada (**373**; `0.38%`), se retuvieron **70,037 registros válidos (`72.3%`)**, sin duplicados por identificador OBIS.
+
+```{r}
+#| label: tabla-fase1-clases
+
+tabla_clases_obis <- tibble::tibble(
+  Clase = c(
+    "Teleostei", "Malacostraca", "Globothalamea", "Holothuroidea",
+    "Asteroidea", "Echinoidea", "Hexacorallia", "Elasmobranchii",
+    "Aves", "Mammalia", "Gastropoda"
+  ),
+  `Registros (1990–2025)` = c(32245, 3853, 3587, 3173, 3063, 2868, 2665, 2321, 2228, 1902, 1779),
+  `Especies (S)` = c(404, 110, 56, 24, 30, 23, 59, 32, 38, 26, 144),
+  `Años con datos` = c(34, 34, 2, 34, 31, 31, 32, 32, 32, 34, 35),
+  `Mediana celdas/año` = c(15.0, 10.0, 1.5, 8.5, 8.0, 9.0, 8.5, 11.0, 6.0, 12.0, 8.0),
+  Evaluación = c(
+    "Seleccionado (candidato óptimo)",
+    "Moderada; revisar sesgo por dataset",
+    "Descartado (solo 2 años, alta concentración)",
+    "Picos marcados; posible sesgo muestral",
+    "Cobertura espacial intermedia",
+    "Cobertura espacial intermedia",
+    "Cobertura espacial intermedia",
+    "Candidato secundario (mejora reciente)",
+    "Cobertura espacial baja",
+    "Alta cobertura, baja riqueza específica",
+    "Alta riqueza, menos registros y celdas"
+  )
+)
+
+knitr::kable(
+  tabla_clases_obis,
+  format.args = list(big.mark = ","),
+  caption = "Tabla 1. Evaluación comparativa de las principales clases marinas en OBIS (1990–2025, 0.25°)."
+) |>
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  ) |>
+  kableExtra::row_spec(1, bold = TRUE, background = "#e8f4f8")
+```
+
+```{r}
+#| label: fig-fase1-seleccion
+#| fig-width: 9.5
+#| fig-height: 4.8
+#| fig-cap: "Figura 1. Criterios de selección taxonómica en Fase 1: riqueza específica vs. mediana anual de celdas ocupadas (0.25°) entre las principales clases de OBIS (1990–2025). El tamaño refleja el número total de registros."
+
+df_plot_f1 <- tabla_clases_obis |>
+  dplyr::mutate(Seleccionado = ifelse(Clase == "Teleostei", "Teleostei (Seleccionado)", "Otras clases"))
+
+ggplot(df_plot_f1, aes(x = `Mediana celdas/año`, y = `Especies (S)`, size = `Registros (1990–2025)`, color = Seleccionado)) +
+  geom_point(alpha = 0.85) +
+  geom_text(
+    aes(label = Clase),
+    size = 3.2, vjust = -1.1, hjust = 0.5, show.legend = FALSE, check_overlap = TRUE
+  ) +
+  scale_color_manual(values = c("Teleostei (Seleccionado)" = "#d95f02", "Otras clases" = "#2b5c8f")) +
+  scale_size_continuous(range = c(3, 14), labels = function(x) format(x, big.mark = ",")) +
+  expand_limits(y = c(0, 455), x = c(0, 17)) +
+  labs(
+    title = "Idoneidad espacio-temporal y taxonómica de clases marinas (OBIS 1990–2025)",
+    subtitle = "Teleostei lidera simultáneamente en registros (32,245), riqueza (404 spp.) y cobertura espacial anual (15 celdas/año)",
+    x = "Mediana de celdas activas por año (grilla 0.25°)",
+    y = "Número de especies únicas (S)",
+    size = "Registros totales",
+    color = "Grupo"
+  ) +
+  theme(legend.position = "right")
+```
+
+En la ventana `1993–2020`, la base oficial de `Teleostei` (`24,607` registros; `358` especies; `27` años, `1994–2020`) estuvo encabezada por **`Eupercaria incertae sedis`** (`7,062` reg., `28.7%`; `53` spp., `14.8%`), **`Perciformes`** (`3,327` reg., `13.5%`; `33` spp., `9.2%`), **`Anguilliformes`** (`536` reg.; `31` spp., `8.7%`), **`Tetraodontiformes`** (`2,020` reg.; `24` spp.) y **`Acanthuriformes`** (`2,471` reg.; `14` spp.), reflejando un predominio de ictiofauna arrecifal y demersal costera del entorno de Galápagos frente a peces pelágicos profundos (`Myctophiformes`, `Stomiiformes`, `Aulopiformes`).
+
+---
+
+## 3. Contraste Integrado de Hipótesis (`H1–H3`)
+
+```{r}
+#| label: tabla-resumen-hipotesis
+
+tabla_h1_h3 <- tibble::tibble(
+  Hipótesis = c(
+    "H1: Diversidad Alfa espacial vs. Ambiente (0.25°)",
+    "H2: Diversidad Beta espacial vs. Distancia ambiental",
+    "H3: Variación interanual (1994–2020)"
+  ),
+  `Método aplicado` = c(
+    "Regresión lineal múltiple + correlaciones (n = 74 celdas)",
+    "Test de Mantel Spearman (499 perm., 2,701 pares)",
+    "Correlaciones Pearson / Spearman anuales (n = 27 años)"
+  ),
+  `Resultados estadísticos clave` = c(
+    "R² aj. = 0.910 | TSM: β = -13.09 (p = 0.0038) | Sal.: β = -36.99 (p = 0.0148) | log10(Chl): p = 0.167 | log10(Esf.): β = +35.08 (t = 19.75, p < 0.0001). Colinealidad TSM–Sal.: r = -0.98 (VIF = 24.5 y 29.5).",
+    "ρ Mantel = +0.335 (p = 0.002). Mayor diferencia oceanográfica (ΔTSM + ΔSalinidad + Δlog10 Chl-a) se asocia con mayor disimilitud de Jaccard.",
+    "TSM ERSST vs. S: ρ = +0.041 (p = 0.841) | TSM Cop. vs. S: ρ = +0.064 (p = 0.752) | Sal. vs. S: ρ = +0.083 (p = 0.681) | Registros vs. S: ρ = +0.668 (p = 0.00014). Única señal bivariada débil: Sal. vs. Simpson (r = +0.398, p = 0.040)."
+  ),
+  Veredicto = c(
+    "Parcialmente apoyada (dominada por esfuerzo y colinealidad TSM–Salinidad)",
+    "Apoyada (recambio espacial estructurado por el ambiente)",
+    "No apoyada (variación anual controlada por esfuerzo muestral)"
+  )
+)
+
+knitr::kable(
+  tabla_h1_h3,
+  caption = "Tabla 2. Síntesis cuantitativa del contraste de hipótesis H1–H3 para Teleostei (OBIS, 1993–2020)."
+) |>
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = TRUE
+  )
+```
+
+### 3.1 Hipótesis H1: Gradientes espaciales, esfuerzo y multicolinealidad (`0.25°`)
+
+Las **74 celdas activas** mostraron una marcada heterogeneidad en intensidad observacional (rango: `1` a `6,715` registros/celda; mediana = `11`) y riqueza (`1` a `149` especies/celda; mediana = `10`). A nivel bivariado, la riqueza alfa ($S$) se asoció negativamente con la TSM ($r = -0.50, \rho = -0.34$), positivamente con la Salinidad ($r = +0.48, \rho = +0.31$) y la Clorofila-*a* ($r = +0.63, \rho = +0.37$), y casi de forma uno-a-uno con el esfuerzo de muestreo (`log10_esfuerzo`: $r = +0.94, \rho = +1.00$).
+
+El diagnóstico de sensibilidad destaca dos cautelas metodológicas:
+
+* **Dominio del esfuerzo observacional:** `log10_esfuerzo` explica por sí solo el **89.0%** de la varianza de la riqueza ($R^2_{\text{aj}} = 0.890$), por lo que el bloque ambiental completo (TSM + Salinidad + Clorofila-*a*) aporta solo un **2.0%** adicional ($R^2_{\text{aj}} = 0.910$).
+* **Artefacto de multicolinealidad TSM–Salinidad:** En el gradiente espacial de las 74 celdas, las aguas frías de afloramiento en el sur (entorno de Galápagos) son simultáneamente más salinas y productivas que las aguas tropicales cálidas del norte (`TSM` vs. `Salinidad`: **$r = -0.98$**, $\text{VIF}_{\text{TSM}} = 24.5$, $\text{VIF}_{\text{Sal}} = 29.5$). Esta colinealidad invierte el signo de la salinidad (de $r = +0.48$ bivariado a $\beta = -36.99$ parcial); al retirar cualquiera de las dos variables del modelo, la restante deja de ser estadísticamente significativa ($p = 0.086$ para TSM sin salinidad; $p = 0.483$ para salinidad sin TSM).
+
+```{r}
+#| label: datos-h1-y-tabla-sensibilidad
+
+df_celdas_74 <- tibble::tibble(
+  lon_025 = c(-95.625, -94.875, -93.625, -90.875, -90.375, -95.625, -92.375, -90.125, -96.625, -96.375, -95.875, -95.625, -95.375, -92.875, -92.625, -94.625, -93.875, -92.375, -92.125, -91.875, -91.125, -94.375, -90.375, -94.875, -94.625, -91.625, -90.875, -90.625, -90.125, -95.125, -93.625, -92.875, -92.125, -90.875, -91.875, -91.125, -97.875, -91.875, -91.625, -90.375, -97.875, -94.625, -94.375, -91.875, -91.625, -93.125, -90.625, -94.125, -93.875, -93.625, -93.375, -90.875, -90.625, -91.625, -91.375, -90.875, -90.625, -90.375, -92.625, -91.875, -91.625, -91.375, -91.125, -90.875, -90.625, -90.375, -91.875, -91.625, -91.375, -91.125, -90.875, -90.625, -90.375, -90.125),
+  lat_025 = c(6.375, 6.375, 6.375, 6.375, 6.375, 6.125, 6.125, 5.875, 5.625, 5.625, 5.625, 5.625, 5.625, 5.625, 5.625, 5.375, 5.375, 5.375, 5.125, 4.875, 4.625, 4.375, 4.375, 4.125, 4.125, 3.875, 3.625, 3.375, 3.375, 3.125, 2.875, 2.625, 2.125, 1.875, 1.625, 1.625, 1.375, 1.375, 1.375, 1.375, 1.125, 1.125, 1.125, 1.125, 1.125, 0.875, 0.875, 0.625, 0.625, 0.625, 0.625, 0.625, 0.625, 0.375, 0.375, 0.375, 0.375, 0.375, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, -0.125, -0.375, -0.375, -0.375, -0.375, -0.375, -0.375, -0.375),
+  n_registros = c(14, 15, 2, 1, 7, 1, 1, 3, 25, 23, 10, 6, 4, 24, 1, 20, 4, 6, 1, 5, 1, 5, 2, 1, 12, 11, 11, 2, 2, 9, 4, 23, 8, 2, 1649, 10, 2, 4251, 37, 25, 6, 5, 4, 60, 12, 6, 1, 2, 11, 4, 6, 1277, 154, 150, 297, 946, 594, 42, 4, 15, 610, 818, 49, 134, 494, 497, 100, 1004, 6715, 179, 57, 2141, 1271, 235),
+  riqueza_alpha = c(10, 11, 2, 1, 5, 1, 1, 3, 21, 17, 7, 6, 4, 15, 1, 17, 4, 4, 1, 5, 1, 5, 2, 1, 10, 9, 9, 2, 2, 8, 4, 17, 6, 2, 132, 9, 2, 149, 24, 17, 6, 5, 4, 34, 10, 6, 1, 2, 9, 4, 5, 116, 46, 46, 84, 123, 81, 28, 3, 12, 97, 119, 32, 49, 77, 107, 47, 133, 141, 61, 34, 130, 121, 59),
+  shannon_alpha = c(2.243, 2.274, 0.693, 0, 1.55, 0, 0, 1.099, 2.976, 2.755, 1.834, 1.792, 1.386, 2.47, 0, 2.773, 1.386, 1.242, 0, 1.609, 0, 1.609, 0.693, 0, 2.254, 2.146, 2.146, 0.693, 0.693, 2.043, 1.386, 2.755, 1.667, 0.693, 4.11, 2.164, 0.693, 4.027, 2.961, 2.742, 1.792, 1.609, 1.386, 3.249, 2.254, 1.792, 0, 0.693, 2.146, 1.386, 1.561, 3.749, 3.553, 3.505, 4.039, 3.922, 3.757, 3.168, 1.04, 2.426, 3.972, 4.051, 3.237, 3.63, 3.748, 4.06, 3.643, 3.945, 3.884, 3.649, 3.314, 4.075, 4.083, 3.641),
+  beta_jaccard = c(0.912, 0.91, 0.946, 0.96, 0.931, 0.971, 0.96, 0.943, 0.892, 0.897, 0.918, 0.922, 0.929, 0.903, 0.96, 0.896, 0.929, 0.935, 0.971, 0.925, 0.96, 0.925, 0.946, 0.971, 0.912, 0.914, 0.914, 0.946, 0.946, 0.916, 0.929, 0.897, 0.922, 0.946, 0.881, 0.914, 0.946, 0.883, 0.89, 0.897, 0.922, 0.925, 0.929, 0.884, 0.912, 0.922, 1, 0.946, 0.914, 0.929, 0.925, 0.878, 0.881, 0.881, 0.876, 0.876, 0.875, 0.888, 0.943, 0.908, 0.874, 0.875, 0.885, 0.88, 0.874, 0.873, 0.88, 0.875, 0.877, 0.877, 0.884, 0.874, 0.874, 0.877),
+  tsm_celda = c(27.67, 27.71, 27.75, 27.82, 27.84, 27.62, 27.77, 27.87, 27.51, 27.54, 27.57, 27.6, 27.62, 27.75, 27.77, 27.61, 27.66, 27.76, 27.73, 27.71, 27.68, 27.49, 27.74, 27.38, 27.4, 27.53, 27.51, 27.47, 27.48, 27.09, 27.03, 26.86, 26.27, 25.92, 25.53, 25.49, 24.83, 25.27, 25.23, 25.19, 24.53, 24.82, 24.86, 24.94, 24.93, 24.67, 24.68, 24.3, 24.32, 24.35, 24.37, 24.22, 24.31, 23.8, 23.79, 23.95, 24.08, 24.14, 23.62, 23.51, 23.43, 23.41, 23.57, 23.71, 23.86, 23.97, 23.1, 22.51, 22.78, 23.22, 23.38, 23.48, 23.63, 23.77),
+  clorofila_celda = c(0.168, 0.161, 0.155, 0.165, 0.172, 0.169, 0.154, 0.175, 0.166, 0.165, 0.163, 0.162, 0.16, 0.151, 0.151, 0.155, 0.151, 0.148, 0.147, 0.144, 0.146, 0.149, 0.156, 0.151, 0.149, 0.147, 0.151, 0.158, 0.162, 0.16, 0.159, 0.165, 0.181, 0.214, 0.225, 0.237, 0.244, 0.242, 0.246, 0.264, 0.261, 0.253, 0.251, 0.256, 0.259, 0.267, 0.296, 0.285, 0.282, 0.281, 0.281, 0.34, 0.335, 0.391, 0.415, 0.369, 0.345, 0.339, 0.343, 0.464, 0.562, 0.622, 0.483, 0.416, 0.371, 0.354, 0.665, 1.454, 2.939, 1.483, 0.875, 0.67, 0.561, 0.431),
+  salinidad_celda = c(33.22, 33.17, 33.09, 32.91, 32.87, 33.25, 33.01, 32.83, 33.3, 33.29, 33.26, 33.25, 33.23, 33.04, 33.02, 33.2, 33.14, 33.01, 33.02, 33.03, 33.02, 33.22, 32.98, 33.28, 33.26, 33.1, 33.1, 33.13, 33.11, 33.37, 33.36, 33.38, 33.5, 33.53, 33.59, 33.57, 33.99, 33.7, 33.68, 33.62, 34.07, 33.95, 33.93, 33.78, 33.77, 33.91, 33.76, 34.08, 34.06, 34.04, 34.03, 33.89, 33.86, 34.18, 34.16, 34.04, 33.97, 33.94, 34.26, 34.33, 34.36, 34.34, 34.23, 34.14, 34.07, 34.01, 34.51, 34.7, 34.82, 34.52, 34.34, 34.26, 34.18, 34.12)
+) |>
+  dplyr::mutate(
+    log10_esfuerzo = log10(n_registros),
+    log10_chl = log10(clorofila_celda)
+  )
+
+tabla_sens_h1 <- tibble::tibble(
+  `Especificación del Modelo (n = 74 celdas)` = c(
+    "M0: Solo esfuerzo (log10_esfuerzo)",
+    "M1: Completo de Fase 2 (TSM + Salinidad + log10_Chl + log10_esfuerzo)",
+    "M2: Sin Salinidad (TSM + log10_Chl + log10_esfuerzo)",
+    "M3: Sin TSM (Salinidad + log10_Chl + log10_esfuerzo)"
+  ),
+  `R² ajustado` = c(0.890, 0.910, 0.903, 0.900),
+  `β TSM (p)` = c("—", "-13.09 (0.0038)", "-2.94 (0.0864)", "—"),
+  `β Salinidad (p)` = c("—", "-36.99 (0.0148)", "—", "+4.11 (0.4832)"),
+  `β log10(Chl-a) (p)` = c("—", "+17.33 (0.1670)", "+3.99 (0.7173)", "+11.45 (0.3262)"),
+  Diagnóstico = c(
+    "Base: esfuerzo explica 89% de la riqueza",
+    "VIF(TSM)=24.5, VIF(Sal)=29.5 (inversión de signo)",
+    "Sin colinealidad severa; TSM marginal (p=0.086)",
+    "Sin colinealidad severa; Salinidad no significativa"
+  )
+)
+
+knitr::kable(
+  tabla_sens_h1,
+  caption = "Tabla 3. Análisis de sensibilidad y diagnóstico de multicolinealidad en la Hipótesis H1."
+) |>
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+```
+
+```{r}
+#| label: fig-h1-diagnostico
+#| fig-width: 10.5
+#| fig-height: 4.8
+#| fig-cap: "Figura 2. Diagnóstico espacial de H1 en las 74 celdas activas (0.25°): (A) acople casi perfecto entre esfuerzo de muestreo y riqueza observada; (B) colinealidad extrema entre TSM y Salinidad (r = -0.98) con concentración de la mayor riqueza en las aguas más frías, salinas y productivas del sur (Galápagos)."
+
+p_h1_a <- ggplot(df_celdas_74, aes(x = n_registros, y = riqueza_alpha)) +
+  geom_smooth(method = "lm", color = "#386cb0", fill = "#cbd5e8", alpha = 0.4) +
+  geom_point(aes(color = tsm_celda), size = 2.6, alpha = 0.85) +
+  scale_x_log10() +
+  scale_color_viridis_c(option = "turbo", name = "TSM (°C)") +
+  labs(
+    title = "A. Efecto del esfuerzo muestral en H1",
+    subtitle = "Solo log10(Registros) explica R² aj. = 0.890 (ρ = 1.00)",
+    x = "Registros por celda (escala log10)",
+    y = "Riqueza Alfa (S)"
+  )
+
+p_h1_b <- ggplot(df_celdas_74, aes(x = tsm_celda, y = salinidad_celda)) +
+  geom_smooth(method = "lm", color = "#525252", linetype = "dashed", se = FALSE) +
+  geom_point(aes(size = n_registros, fill = riqueza_alpha), shape = 21, color = "white", alpha = 0.9) +
+  scale_fill_viridis_c(option = "mako", direction = -1, name = "Riqueza (S)") +
+  scale_size_continuous(range = c(2.5, 10), name = "Registros", labels = function(x) format(x, big.mark = ",")) +
+  labs(
+    title = "B. Colinealidad oceanográfica (TSM vs. Salinidad)",
+    subtitle = "r = -0.98 (VIF > 24): aguas frías-salinas concentran mayor riqueza",
+    x = "TSM media celda Bio-ORACLE (°C)",
+    y = "Salinidad media celda Copernicus (PSU)"
+  )
+
+p_h1_a + p_h1_b
+```
+
+### 3.2 Hipótesis H2: Recambio espacial de especies (`Beta de Jaccard`)
+
+El contraste sobre los **2,701 pares únicos** de celdas activas de $0.25^\circ$ confirmó una correlación positiva y significativa entre la disimilitud de composición de especies (`Beta de Jaccard`, media espacial por celda $= 0.911$, rango `0.869–1.000`) y la distancia oceanográfica multivariada ($\Delta\text{TSM} + \Delta\text{Salinidad} + \Delta\log_{10}\text{Chl-}a$): **Mantel Spearman $\rho = 0.335$ ($p = 0.002$)**. Esto sugiere que los contrastes entre masas de agua frías/salinas de afloramiento en el sur y aguas cálidas/menos salinas del norte estructuran el recambio espacial de la ictiofauna. No obstante, resta verificar mediante un **test de Mantel parcial** qué fracción de esta señal corresponde a filtrado ambiental estricto frente a autocorrelación espacial (distancia geográfica) y diferencias de esfuerzo entre celdas.
+
+### 3.3 Hipótesis H3: Dinámica interanual (`1994–2020`) y señal ENSO
+
+Las series de TSM de **NOAA ERSST** (media `26.33 °C`) y **Copernicus Marine** (media `26.36 °C`) mostraron una concordancia casi exacta ($r = 0.977, p < 10^{-17}$), capturando los eventos **El Niño de 1997–1998** (picos `27.70 °C` en 1997 y `27.17 °C` en 1998) y **2015–2016** (`27.54 °C` en 2015, junto con la mínima salinidad anual de `33.201 PSU`).
+
+Pese a esta fuerte variabilidad oceanográfica, **no se observó asociación significativa entre TSM o Salinidad y la riqueza anual ($S$) ni con Shannon ($H'$)** (`TSM ERSST` vs. $S$: $\rho = 0.041, p = 0.841$; `Salinidad` vs. $S$: $\rho = 0.083, p = 0.681$). En cambio, la riqueza anual dependió fuertemente del número de registros anuales ($\rho = 0.668, p = 0.00014$; $r = 0.691$). Durante **El Niño 1998** se registró la segunda mayor riqueza de la serie (`S = 156` con `612` registros), mientras que durante **El Niño 2015** se obtuvo la menor riqueza (`S = 45` con apenas `117` registros). La única correlación paramétrica marginalmente significativa fue entre Salinidad y el índice de Simpson ($r = +0.398, p = 0.040$), la cual desaparece bajo Spearman ($\rho = +0.177, p = 0.378$) por la influencia del año atípico 2015.
+
+```{r}
+#| label: fig-h3-interanual
+#| fig-width: 10.5
+#| fig-height: 7.2
+#| fig-cap: "Figura 3. Dinámica interanual integrada (1994–2020): (A) TSM anual ERSST y Copernicus con eventos El Niño (franjas rojas); (B) Salinidad Superficial Copernicus; (C) Riqueza Alfa anual (barras) acoplada a la variación del esfuerzo muestral (línea)."
+
+df_anual_27 <- tibble::tibble(
+  year = 1994:2020,
+  tsm_ersst = c(25.900, 25.792, 25.574, 27.700, 27.171, 25.660, 25.838, 25.963, 26.564, 26.278, 26.189, 25.849, 26.412, 25.748, 26.367, 26.611, 26.120, 26.004, 26.501, 25.803, 26.715, 27.535, 26.774, 26.542, 26.394, 26.614, 26.248),
+  tsm_cop = c(25.951, 25.926, 25.342, 27.758, 27.427, 25.662, 25.843, 25.999, 26.436, 26.288, 26.125, 26.014, 26.497, 25.661, 26.491, 26.679, 26.090, 26.137, 26.586, 26.030, 26.859, 27.656, 26.646, 26.346, 26.312, 26.521, 26.266),
+  salinidad = c(33.682, 33.552, 33.645, 33.736, 33.572, 33.731, 33.656, 33.622, 33.900, 33.711, 33.646, 33.594, 33.564, 33.583, 33.445, 33.623, 33.563, 33.475, 33.376, 33.663, 33.242, 33.201, 33.452, 33.556, 33.527, 33.535, 33.396),
+  n_registros = c(75, 309, 107, 175, 612, 216, 747, 1635, 2463, 914, 570, 1789, 2055, 783, 1119, 1037, 1342, 999, 1199, 1024, 869, 117, 511, 1071, 1170, 1181, 518),
+  riqueza_s = c(52, 126, 52, 77, 156, 82, 142, 116, 140, 120, 80, 117, 163, 98, 105, 120, 122, 104, 122, 111, 103, 45, 96, 105, 110, 112, 79),
+  shannon_h = c(3.853, 4.477, 3.744, 4.142, 4.566, 4.081, 4.452, 4.086, 4.277, 4.194, 3.973, 4.120, 4.361, 4.066, 4.134, 4.211, 4.216, 4.096, 4.240, 4.211, 4.173, 3.411, 4.068, 4.120, 3.805, 4.040, 3.867),
+  beta_jacc = c(0.855, 0.648, 0.855, 0.785, 0.564, 0.771, 0.603, 0.676, 0.609, 0.665, 0.777, 0.673, 0.545, 0.726, 0.707, 0.665, 0.659, 0.709, 0.659, 0.690, 0.712, 0.874, 0.732, 0.707, 0.693, 0.687, 0.779)
+)
+
+p_h3_1 <- ggplot(df_anual_27, aes(x = year)) +
+  annotate("rect", xmin = 1996.7, xmax = 1998.5, ymin = -Inf, ymax = Inf, fill = "#e31a1c", alpha = 0.12) +
+  annotate("rect", xmin = 2014.7, xmax = 2016.5, ymin = -Inf, ymax = Inf, fill = "#e31a1c", alpha = 0.12) +
+  geom_line(aes(y = tsm_ersst, color = "TSM ERSST (°C)"), linewidth = 1) +
+  geom_point(aes(y = tsm_ersst, color = "TSM ERSST (°C)"), size = 1.8) +
+  geom_line(aes(y = tsm_cop, color = "TSM Copernicus (°C)"), linewidth = 0.85, linetype = "dashed") +
+  scale_color_manual(values = c("TSM ERSST (°C)" = "#d95f02", "TSM Copernicus (°C)" = "#99000d"), name = NULL) +
+  scale_x_continuous(breaks = seq(1994, 2020, by = 2)) +
+  labs(title = "A. Temperatura Superficial del Mar (1994–2020; r ERSST–Copernicus = 0.977)", x = NULL, y = "TSM (°C)") +
+  theme(legend.position = "top")
+
+p_h3_2 <- ggplot(df_anual_27, aes(x = year, y = salinidad)) +
+  annotate("rect", xmin = 1996.7, xmax = 1998.5, ymin = -Inf, ymax = Inf, fill = "#e31a1c", alpha = 0.12) +
+  annotate("rect", xmin = 2014.7, xmax = 2016.5, ymin = -Inf, ymax = Inf, fill = "#e31a1c", alpha = 0.12) +
+  geom_line(color = "#2166ac", linewidth = 1) +
+  geom_point(color = "#2166ac", size = 1.8) +
+  scale_x_continuous(breaks = seq(1994, 2020, by = 2)) +
+  labs(title = "B. Salinidad Superficial del Mar (Copernicus Marine; mínima en 2015 = 33.20 PSU)", x = NULL, y = "Salinidad (PSU)")
+
+escala_reg <- max(df_anual_27$n_registros) / max(df_anual_27$riqueza_s)
+
+p_h3_3 <- ggplot(df_anual_27, aes(x = year)) +
+  annotate("rect", xmin = 1996.7, xmax = 1998.5, ymin = -Inf, ymax = Inf, fill = "#e31a1c", alpha = 0.12) +
+  annotate("rect", xmin = 2014.7, xmax = 2016.5, ymin = -Inf, ymax = Inf, fill = "#e31a1c", alpha = 0.12) +
+  geom_col(aes(y = riqueza_s), fill = "#2b5c8f", alpha = 0.8, width = 0.65) +
+  geom_line(aes(y = n_registros / escala_reg), color = "#1b9e77", linewidth = 1) +
+  geom_point(aes(y = n_registros / escala_reg), color = "#1b9e77", size = 2) +
+  scale_y_continuous(
+    name = "Riqueza anual (S, barras)",
+    sec.axis = sec_axis(~ . * escala_reg, name = "Registros anuales (línea verde)")
+  ) +
+  scale_x_continuous(breaks = seq(1994, 2020, by = 2)) +
+  labs(
+    title = "C. Riqueza anual de Teleostei vs. Esfuerzo muestral (ρ = +0.668, p = 0.00014)",
+    subtitle = "Nótese el contraste entre El Niño 1998 (S = 156, n = 612) y El Niño 2015 (S = 45, n = 117)",
+    x = "Año"
+  )
+
+p_h3_1 / p_h3_2 / p_h3_3
+```
+
+---
+
+## 4. Régimen Oceanográfico y Tendencias del Corredor (`1993–2020`)
+
+El análisis de los **336 meses** de Copernicus Marine (`0.494 m`) y las **1,872 celdas** de $0.25^\circ$ revela un corredor altamente estructurado en espacio, estacionalidad y tendencia multidecadal:
+
+* **Contraste espacial norte–sur:** El sector norte (`2.88° a 6.88° N`) presenta anomalías térmicas fuertemente positivas (`42.1%` del corredor, media $+1.378\ ^\circ\text{C}$) y salinidades reducidas (`-0.278` a `-0.755 PSU`), mientras que el sector sur (`-1.88° a 0.88° N`, Galápagos) exhibe anomalías térmicas fuertemente negativas (`29.6%`, media $-2.123\ ^\circ\text{C}$) asociadas a surgencia y alta salinidad (`27.5%`, media $+0.918\ \text{PSU}$).
+* **Ciclo estacional acoplado:** La TSM alcanza su máximo climatológico en **marzo (`28.07 °C`)** y su mínimo en **septiembre (`25.29 °C`)** (amplitud media de `2.78 °C`), mientras que la salinidad registra su mínimo en **febrero (`33.16 PSU`)** y su máximo en **junio–julio (`33.88 PSU`)**.
+* **Calentamiento y dilución generalizados (`2007–2020` vs. `1993–2006`):** El **93.3%** de las celdas del corredor experimentó **calentamiento** (cambio medio ponderado del corredor: $+0.174\ ^\circ\text{C}$) y el **95.8%** mostró **desalinización/dilución** (cambio medio ponderado: $-0.186\ \text{PSU}$).
+
+```{r}
+#| label: tabla-anomalias-corredor
+
+tabla_anomalias <- tibble::tibble(
+  `Variable y Enfoque` = c(
+    "TSM — Anomalía espacial (Norte cálido > +1.0 °C)",
+    "TSM — Anomalía espacial (Sur frío < -1.0 °C)",
+    "Salinidad — Anomalía espacial (Sur salino > +0.5 PSU)",
+    "Salinidad — Anomalía espacial (Norte diluido < -0.5 PSU)",
+    "TSM — Cambio temporal (Calentamiento: 2007–2020 vs. 1993–2006)",
+    "TSM — Cambio temporal (Enfriamiento: 2007–2020 vs. 1993–2006)",
+    "Salinidad — Cambio temporal (Dilución: 2007–2020 vs. 1993–2006)",
+    "Salinidad — Cambio temporal (Salinización: 2007–2020 vs. 1993–2006)"
+  ),
+  `Celdas (n)` = c(789, 554, 515, 490, 1746, 126, 1793, 79),
+  `% Corredor` = c(42.1, 29.6, 27.5, 26.2, 93.3, 6.7, 95.8, 4.2),
+  `Media del Grupo` = c(
+    "+1.378 °C", "-2.123 °C", "+0.918 PSU", "-0.755 PSU",
+    "+0.191 °C", "-0.057 °C", "-0.196 PSU", "+0.030 PSU"
+  ),
+  `Latitud Media` = c("5.09° N", "-0.66° S", "-0.73° S", "4.70° N", "2.78° N", "-1.38° S", "2.34° N", "6.07° N")
+)
+
+knitr::kable(
+  tabla_anomalias,
+  format.args = list(big.mark = ","),
+  caption = "Tabla 4. Zonificación espacial y cambio temporal (2007–2020 vs. 1993–2006) en el corredor Galápagos–Coco (Copernicus 0.25°, 1,872 celdas)."
+) |>
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+```
+
+```{r}
+#| label: fig-oceanografia-corredor
+#| fig-width: 10.5
+#| fig-height: 4.8
+#| fig-cap: "Figura 4. Dinámica oceanográfica del corredor marino (Copernicus 1993–2020): (A) proporción de las 1,872 celdas con calentamiento y dilución entre 2007–2020 y 1993–2006; (B) ciclo estacional climatológico acoplado de TSM y Salinidad (336 meses)."
+
+df_cambio <- tibble::tibble(
+  Variable = c("TSM", "TSM", "Salinidad", "Salinidad"),
+  Tendencia = c("Calentamiento (+)", "Enfriamiento (-)", "Dilución (-)", "Salinización (+)"),
+  Porcentaje = c(93.3, 6.7, 95.8, 4.2)
+)
+
+p_oc_a <- ggplot(df_cambio, aes(x = Variable, y = Porcentaje, fill = Tendencia)) +
+  geom_col(width = 0.55, color = "white") +
+  geom_text(aes(label = paste0(Porcentaje, "%")), position = position_stack(vjust = 0.5), color = "white", fontface = "bold", size = 3.5) +
+  scale_fill_manual(values = c(
+    "Calentamiento (+)" = "#d73027",
+    "Enfriamiento (-)" = "#4575b4",
+    "Dilución (-)" = "#2166ac",
+    "Salinización (+)" = "#74add1"
+  )) +
+  labs(
+    title = "A. Cambio temporal (2007–2020 vs. 1993–2006)",
+    subtitle = "1,872 celdas Copernicus (0.25°) en -99° a -86° W",
+    x = NULL, y = "% de celdas del corredor", fill = "Dirección"
+  )
+
+df_estacional <- tibble::tibble(
+  mes_num = 1:12,
+  mes = factor(c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"),
+               levels = c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")),
+  tsm = c(26.373, 27.444, 28.069, 27.936, 27.215, 26.416, 25.763, 25.315, 25.289, 25.425, 25.410, 25.688),
+  sal = c(33.485, 33.156, 33.221, 33.440, 33.702, 33.877, 33.878, 33.778, 33.657, 33.575, 33.521, 33.515)
+)
+
+# Reescalar salinidad para graficar junto a TSM
+sal_a_tsm <- function(s) (s - 33.0) * 3.5 + 24.8
+tsm_a_sal <- function(t) (t - 24.8) / 3.5 + 33.0
+
+p_oc_b <- ggplot(df_estacional, aes(x = mes_num)) +
+  geom_line(aes(y = tsm, color = "TSM (°C)"), linewidth = 1.1) +
+  geom_point(aes(y = tsm, color = "TSM (°C)"), size = 2.2) +
+  geom_line(aes(y = sal_a_tsm(sal), color = "Salinidad (PSU)"), linewidth = 1.1, linetype = "dashed") +
+  geom_point(aes(y = sal_a_tsm(sal), color = "Salinidad (PSU)"), size = 2.2) +
+  scale_x_continuous(breaks = 1:12, labels = levels(df_estacional$mes)) +
+  scale_y_continuous(
+    name = "TSM media (°C)",
+    sec.axis = sec_axis(~ tsm_a_sal(.), name = "Salinidad media (PSU)")
+  ) +
+  scale_color_manual(values = c("TSM (°C)" = "#b2182b", "Salinidad (PSU)" = "#2166ac"), name = NULL) +
+  labs(
+    title = "B. Ciclo estacional climatológico (336 meses)",
+    subtitle = "TSM máx: Mar (28.07 °C), mín: Sep (25.29 °C) | Sal máx: Jul (33.88 PSU)",
+    x = "Mes"
+  ) +
+  theme(legend.position = "bottom")
+
+p_oc_a + p_oc_b + patchwork::plot_layout(widths = c(1, 1.35))
+```
+
+---
+
+## 5. Limitaciones Metodológicas y Próximos Pasos Recomendados
+
+1. **Ampliación del dominio biológico al corredor completo:** Repetir la descarga de Fase 1 (`01_obis_seleccion_taxonomica.qmd`) extendiendo `lon_max` de `-90° W` a **`-86° W`** (y `lat_min` a `-2° S`) para incorporar la **Isla del Coco** y alinear el dominio biológico con la grilla oceanográfica de Copernicus y Bio-ORACLE.
+2. **Estandarización por cobertura muestral (rarefacción):** Aplicar rarefacción basada en cobertura (Chao & Jost, 2012; paquete `iNEXT`) antes de estimar $S$, $H'$ y $1-D$ por celda y por año, eliminando la dependencia del esfuerzo (`R² = 0.89` en H1 y `ρ = 0.67` en H3).
+3. **Resolución de la colinealidad en H1:** Dado que TSM y Salinidad presentan $r = -0.98$ a escala espacial, modelar sus efectos mediante **modelos separados**, **ejes ortogonales (PCA ambiental)** o **GAMs** usando las capas coetáneas de Copernicus (`1993–2020`: `tsm_copernicus_025` y `salinidad_celda`) en lugar de mezclar climatologías Bio-ORACLE con Copernicus.
+4. **Refinamiento de diversidad Beta en H2 y H3:**
+   * En **H2**, aplicar un **test de Mantel parcial** controlando la distancia geográfica entre celdas y descomponer la disimilitud de Jaccard en **recambio (*turnover*)** vs. **anidamiento (*nestedness*)** (paquete `betapart`).
+   * En **H3**, sustituir la Beta anual contra el *pool* acumulado de 27 años (que correlaciona mecánicamente con la riqueza y el esfuerzo anual, $\rho = -0.668$) por disimilitud entre años consecutivos ($t$ vs. $t-1$) calculada sobre muestras rarificadas.
