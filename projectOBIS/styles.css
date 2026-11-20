@@ -1,0 +1,550 @@
+
+/* ==========================================================
+   OCEANHACKWEEK 2026
+   Scientific Marine Report
+   ========================================================== */
+
+/* 01. PALETA DE COLORES */
+
+:root {
+  --ocean-dark: #10394C;
+  --ocean-teal: #16847C;
+  --ocean-blue: #397E9C;
+  --ocean-light: #EAF3F5;
+  --ocean-border: #D5E1E6;
+  --text-main: #263746;
+  --text-muted: #657786;
+  --background: #FFFFFF;
+}
+
+/* 02. DOCUMENTO GENERAL */
+
+body {
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 15.5px;
+  line-height: 1.75;
+  color: var(--text-main);
+  background-color: var(--background);
+}
+
+main.content {
+  padding-top: 20px;
+  padding-bottom: 60px;
+}
+
+p {
+  margin-bottom: 1rem;
+  text-align: justify;
+}
+
+/* 03. ENCABEZADO PRINCIPAL */
+
+#title-block-header {
+  background: linear-gradient(
+    120deg,
+    #10394C 0%,
+    #17566B 65%,
+    #16847C 100%
+  );
+  padding: 32px 36px;
+  border-radius: 8px;
+  margin-bottom: 36px;
+  color: white;
+}
+
+#title-block-header h1.title {
+  color: #FFFFFF;
+  font-size: 2rem;
+  font-weight: 650;
+  line-height: 1.25;
+  border: none;
+  margin-bottom: 15px;
+}
+
+#title-block-header .subtitle {
+  color: #C9E7EB;
+  font-size: 1.05rem;
+  font-weight: 400;
+}
+
+#title-block-header .quarto-title-meta {
+  color: #EAF3F5;
+}
+
+/* 04. TITULOS Y SUBTITULOS */
+
+main h1 {
+  color: var(--ocean-dark);
+  font-weight: 650;
+  font-size: 2rem;
+}
+
+main h2 {
+  color: var(--ocean-dark);
+  font-size: 1.55rem;
+  font-weight: 650;
+  margin-top: 45px;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--ocean-teal);
+}
+
+main h3 {
+  color: var(--ocean-teal);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 30px;
+  margin-bottom: 15px;
+}
+
+main h4 {
+  color: var(--ocean-blue);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* 05. TABLA DE CONTENIDO */
+
+#TOC {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#TOC .nav-link {
+  color: var(--text-muted);
+  padding: 5px 10px;
+}
+
+#TOC .nav-link:hover {
+  color: var(--ocean-teal);
+  background-color: var(--ocean-light);
+}
+
+#TOC .nav-link.active {
+  color: var(--ocean-teal);
+  border-left: 3px solid var(--ocean-teal);
+  background-color: var(--ocean-light);
+  font-weight: 600;
+}
+
+#toc-title {
+  color: var(--ocean-dark);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* 06. TABLAS */
+
+table {
+  width: 100%;
+  margin-top: 20px;
+  margin-bottom: 24px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+table thead th {
+  background-color: var(--ocean-dark);
+  color: white;
+  padding: 12px 10px;
+  font-weight: 600;
+  border: 1px solid var(--ocean-dark);
+  vertical-align: middle;
+}
+
+table tbody td {
+  padding: 10px;
+  border-bottom: 1px solid var(--ocean-border);
+  vertical-align: middle;
+}
+
+table tbody tr:nth-child(even) {
+  background-color: #F3F7F9;
+}
+
+table tbody tr:hover {
+  background-color: #E5F1F0;
+}
+
+table img {
+  border-radius: 5px;
+  max-width: 100%;
+  height: auto;
+}
+
+/* 07. FIGURAS */
+
+.quarto-figure {
+  margin-top: 25px;
+  margin-bottom: 30px;
+}
+
+.quarto-figure img {
+  max-width: 100%;
+  height: auto;
+}
+
+figure {
+  margin-top: 20px;
+  margin-bottom: 25px;
+}
+
+figcaption,
+.figure-caption,
+.table-caption,
+.quarto-float-caption,
+caption {
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  text-align: left;
+  margin-top: 12px;
+}
+
+.quarto-float-caption {
+  border-left: 3px solid var(--ocean-teal);
+  padding-left: 12px;
+}
+
+/* 08. CODIGO R */
+
+div.sourceCode {
+  background-color: #F5F8FA;
+  border: 1px solid var(--ocean-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-top: 12px;
+  margin-bottom: 18px;
+}
+
+pre.sourceCode {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+code {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.88em;
+}
+
+p code,
+li code,
+td code {
+  background-color: var(--ocean-light);
+  color: #176B65;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+/* 09. CODIGO DESPLEGABLE */
+
+details.code-fold {
+  margin-top: 15px;
+  margin-bottom: 15px;
+}
+
+details.code-fold > summary {
+  background-color: #F0F5F7;
+  color: var(--ocean-dark);
+  border: 1px solid var(--ocean-border);
+  padding: 8px 14px;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+details.code-fold > summary:hover {
+  background-color: #E1EFEE;
+}
+
+/* 10. RESULTADOS DE CONSOLA */
+
+.cell-output-stdout pre {
+  background-color: #F7FAFB;
+  border-left: 3px solid var(--ocean-blue);
+  padding: 15px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-radius: 3px;
+}
+
+.cell-output-display {
+  margin-top: 15px;
+  margin-bottom: 20px;
+}
+
+/* 11. ENLACES Y REFERENCIAS */
+
+a {
+  color: var(--ocean-blue);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--ocean-teal);
+  text-decoration: underline;
+}
+
+strong {
+  font-weight: 650;
+}
+
+blockquote {
+  background-color: var(--ocean-light);
+  border-left: 4px solid var(--ocean-teal);
+  padding: 15px 20px;
+  margin: 20px 0;
+  color: var(--text-main);
+}
+
+/* 12. DIAGRAMAS MERMAID */
+
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 25px auto;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 13. SEPARADORES */
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--ocean-border);
+  margin: 30px 0;
+}
+
+/* 14. DISPOSITIVOS MOVILES */
+
+@media screen and (max-width: 768px) {
+
+  body {
+    font-size: 14px;
+  }
+
+  #title-block-header {
+    padding: 22px;
+  }
+
+  #title-block-header h1.title {
+    font-size: 1.5rem;
+  }
+
+  main h2 {
+    font-size: 1.3rem;
+  }
+
+  main h3 {
+    font-size: 1.1rem;
+  }
+
+  table {
+    font-size: 12px;
+  }
+
+  table td,
+  table th {
+    padding: 7px;
+  }
+}
+
+/* 15. IMPRESION */
+
+@media print {
+
+  #title-block-header {
+    background: white;
+    color: black;
+    border-bottom: 2px solid var(--ocean-dark);
+  }
+
+  #title-block-header h1.title,
+  #title-block-header .subtitle {
+    color: black;
+  }
+
+  figure {
+    break-inside: avoid;
+  }
+
+  a {
+    color: inherit;
+  }
+}
+
+
+/* ==========================================================
+   16. AJUSTE TIPOGRAFICO
+   Estilo académico y científico
+   ========================================================== */
+
+:root {
+  --bs-font-sans-serif: Arial, Helvetica, sans-serif;
+  --bs-body-font-family: Arial, Helvetica, sans-serif;
+  --bs-body-font-size: 16.5px;
+}
+
+html {
+  font-size: 16.5px;
+}
+
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 16.5px;
+  line-height: 1.7;
+  font-weight: 400;
+}
+
+/* Título principal */
+
+#title-block-header h1.title {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+#title-block-header .subtitle {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 400;
+}
+
+/* Encabezados */
+
+main h1,
+main h2,
+main h3,
+main h4,
+main h5 {
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: 700;
+}
+
+main h2 {
+  font-size: 1.55rem;
+}
+
+main h3 {
+  font-size: 1.25rem;
+}
+
+main h4 {
+  font-size: 1.05rem;
+}
+
+/* Párrafos */
+
+main p,
+main li {
+  font-size: 16.5px;
+  line-height: 1.7;
+}
+
+strong,
+b {
+  font-weight: 700;
+}
+
+/* Índice de contenido */
+
+#TOC,
+#TOC .nav-link {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* Tablas */
+
+table,
+table th,
+table td,
+table p {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* Leyendas de figuras y tablas */
+
+figcaption,
+.figure-caption,
+.table-caption,
+.quarto-float-caption,
+.quarto-float-caption p,
+caption {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+/* Código y resultados de R */
+
+pre,
+code,
+pre.sourceCode,
+.cell-output-stdout pre {
+  font-family: Consolas, "Courier New", monospace;
+}
+
+pre.sourceCode {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.cell-output-stdout pre {
+  font-size: 13.5px;
+}
+
+details.code-fold > summary {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+}
+
+/* Diagramas Mermaid */
+
+.mermaid {
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.mermaid svg text,
+.mermaid .nodeLabel,
+.mermaid .edgeLabel,
+.mermaid .nodeLabel p {
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-size: 15px !important;
+}
+
+/* Adaptación a dispositivos móviles */
+
+@media screen and (max-width: 768px) {
+
+  body,
+  main p,
+  main li {
+    font-size: 15px;
+  }
+
+  #title-block-header h1.title {
+    font-size: 1.6rem;
+  }
+
+  table,
+  table th,
+  table td,
+  table p {
+    font-size: 13px;
+  }
+
+  figcaption,
+  .quarto-float-caption,
+  .quarto-float-caption p {
+    font-size: 13px;
+  }
+}

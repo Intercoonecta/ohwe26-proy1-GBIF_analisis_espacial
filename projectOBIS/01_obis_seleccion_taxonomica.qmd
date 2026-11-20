@@ -1,18 +1,41 @@
 ---
 title: "OBIS | Caracterización espacio-temporal y taxonómica de registros de biodiversidad marina"
-subtitle: "Proyecto-1 en OHWe 2026"
+subtitle: "Proyecto 1 · OceanHackWeek en Español 2026"
 lang: es
+
 format:
   html:
+    theme: flatly
+    css: styles.css
     toc: true
     toc-depth: 3
+    toc-location: left
+    toc-title: "Contenido"
+    toc-expand: 2
     code-fold: true
+    code-summary: "Mostrar código R"
+    code-copy: true
+    code-tools: true
+    code-overflow: wrap
     embed-resources: true
+    smooth-scroll: true
+    anchor-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    fig-align: center
+    page-layout: full
+    grid:
+      sidebar-width: 270px
+      body-width: 1100px
+      margin-width: 100px
+      gutter-width: 30px
+
 execute:
   echo: true
   warning: true
   message: true
   execute-dir: project
+
 params:
   lon_min: -93
   lon_max: -88.5
@@ -1557,7 +1580,7 @@ El proyecto se organiza en cinco etapas, desde la adquisición y selección de r
 | Etapa | Documento | Objetivo | Producto principal |
 |------------------|------------------|------------------|------------------|
 | **01** | `01_obis_seleccion_taxonomica.qmd` | Adquisición, depuración, análisis exploratorio y selección del ensamblaje arrecifal. | Base estandarizada de ocurrencias de peces arrecifales y especies con asociación arrecifal variable. |
-| **02** | `02_reef_fishes_characterization.qmd` | Caracterización taxonómica, espacial, temporal y metodológica del ensamblaje seleccionado. | Base analítica con unidades de muestreo comparables, estaciones, eventos y bioregiones. |
+| **02** | `02_reef_fishes_characterization.qmd` | Caracterización taxonómica, espacial, temporal del ensamblaje | Base con unidades de muestreo comparables, estaciones, eventos y bioregiones. |
 | **03** | `03_reef_fishes_diversity.qmd` | Evaluación de la completitud del muestreo, rarefacción, diversidad alfa y beta, recambio de especies y anidamiento. | Indicadores de diversidad taxonómica y cambios en la composición de los ensamblajes. |
 | **04** | `04_reef_fishes_oceanography.qmd` | Caracterización de la variabilidad oceanográfica y extracción espacio-temporal de covariables ambientales. | Base integrada de variables oceanográficas asociadas a las unidades de muestreo. |
 | **05** | `05_reef_fishes_environment.qmd` | Evaluación de las relaciones entre diversidad, composición comunitaria y variabilidad ambiental mediante modelos estadísticos. | Modelos ecológicos, evaluación de hipótesis y resultados para la elaboración del artículo científico. |
