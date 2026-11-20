@@ -32,12 +32,12 @@ cmt <- import("copernicusmarine")
 # 3.-Realizar la autentificación en Coperninus Marine Service
 ## Para ello, remplaza los siguientes datos con tus credenciales (usario y contraseña): 
 
-usuario_copernicus <- "edumart"
-password_copernicus <- "Copernicus17."
+usuario_copernicus <- "usuario"
+password_copernicus <- "contraseña"
 
 # 4.-Una vez que verifiques que tus datos sean correctos ejecuta el código y continuar
 
-cmt$login("edumart", "Copernicus17.")
+cmt$login("usuario", "contraeña")
 
 # 5.-Definición de parámetros para el anális de la variable de interés
 
