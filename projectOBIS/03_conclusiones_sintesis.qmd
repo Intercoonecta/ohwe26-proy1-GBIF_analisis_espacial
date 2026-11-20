@@ -20,7 +20,7 @@ execute:
 #| label: setup
 #| include: false
 
-paquetes <- c("dplyr", "tidyr", "tibble", "ggplot2", "patchwork", "knitr", "kableExtra")
+paquetes <- c("dplyr", "tidyr", "tibble", "ggplot2", "patchwork", "knitr", "kableExtra", "sf", "rnaturalearth", "rnaturalearthdata")
 faltantes <- paquetes[!(paquetes %in% installed.packages()[, "Package"])]
 if (length(faltantes) > 0) {
   install.packages(faltantes, dependencies = TRUE, repos = "[https://cloud.r-project.org](https://cloud.r-project.org)")
@@ -249,6 +249,154 @@ p_h1_b <- ggplot(df_celdas_74, aes(x = tsm_celda, y = salinidad_celda)) +
   )
 
 p_h1_a + p_h1_b
+```
+
+#### Distribución espacial de *hotspots* de riqueza frente a la Isla del Coco
+
+La espacialización de las 74 celdas activas evidencia una fuerte asimetría geográfica: las **10 celdas *hotspot* ($S \ge 100$ especies)** se agrupan exclusivamente alrededor del **Archipiélago de Galápagos** (bloque Darwin–Wolf con $S = 149$ y $132$, y Galápagos occidental/central con $S = 141$, $133$ y $130$), concentrando el **85.2%** de los registros (`20,569` de `24,140`). En contraste, las 33 celdas al norte de `2° N` reúnen solo el **1.1%** de los registros (`264`, máx. $S = 21$), y la **Isla del Coco** (`87.06° W, 5.53° N`) queda fuera del polígono de descarga biológica de OBIS (`-98° a -90° W`).
+
+```{r}
+#| label: fig-mapa-hotspots-coco
+#| fig-width: 10.5
+#| fig-height: 6.8
+#| fig-cap: "Figura 2B. Mapa espacial de las 74 celdas activas de Teleostei (0.25° × 0.25°, OBIS 1993–2020). Se resaltan en borde rojo los 10 hotspots de riqueza (S ≥ 100 spp.), el límite del polígono biológico OBIS (línea naranja discontinua) y la ubicación de la Isla del Coco dentro del corredor oceanográfico completo (línea gris punteada)."
+
+# 1. Función auxiliar para crear polígonos rectangulares sf (WGS84)
+crear_rectangulo_sf <- function(xmin, xmax, ymin, ymax) {
+  sf::st_polygon(list(matrix(
+    c(xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax, xmin, ymin),
+    ncol = 2, byrow = TRUE
+  )))
+}
+
+# 2. Convertir las 74 celdas (0.25° x 0.25°) a objeto sf
+geoms_celdas <- lapply(seq_len(nrow(df_celdas_74)), function(i) {
+  crear_rectangulo_sf(
+    df_celdas_74$lon_025[i] - 0.125, df_celdas_74$lon_025[i] + 0.125,
+    df_celdas_74$lat_025[i] - 0.125, df_celdas_74$lat_025[i] + 0.125
+  )
+})
+
+sf_celdas_74 <- sf::st_sf(
+  df_celdas_74,
+  geometry = sf::st_sfc(geoms_celdas, crs = 4326)
+)
+
+sf_hotspots <- sf_celdas_74 |>
+  dplyr::filter(riqueza_alpha >= 100)
+
+# 3. Polígonos de referencia: dominio OBIS vs. corredor oceanográfico completo
+sf_poligono_obis <- sf::st_sf(
+  dominio = "Polígono biológico OBIS (-98° a -90° W, -0.5° a 6.5° N)",
+  geometry = sf::st_sfc(crear_rectangulo_sf(-98, -90, -0.5, 6.5), crs = 4326)
+)
+
+sf_corredor <- sf::st_sf(
+  dominio = "Corredor oceanográfico (-99° a -86° W, -2° a 7° N)",
+  geometry = sf::st_sfc(crear_rectangulo_sf(-99, -86, -2, 7), crs = 4326)
+)
+
+# 4. Puntos de referencia geográficos y línea de costa
+sf_coco <- sf::st_sf(
+  nombre = "Isla del Coco",
+  geometry = sf::st_sfc(sf::st_point(c(-87.06, 5.53)), crs = 4326)
+)
+
+tierra <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+# 5. Mapa estático integrado (ggplot2 + sf)
+ggplot() +
+  # Fondo del corredor oceanográfico completo
+  geom_sf(
+    data = sf_corredor,
+    fill = "#f7fbff", color = "#525252", linetype = "dotted", linewidth = 0.7
+  ) +
+  # Área de descarga biológica OBIS
+  geom_sf(
+    data = sf_poligono_obis,
+    fill = "#fff7ec", alpha = 0.35, color = "#d95f02", linetype = "dashed", linewidth = 0.85
+  ) +
+  # Grilla de 74 celdas activas coloreadas por riqueza alfa (S)
+  geom_sf(
+    data = sf_celdas_74,
+    aes(fill = riqueza_alpha),
+    color = "white", linewidth = 0.15
+  ) +
+  # Resalte de los 10 hotspots (S >= 100 spp.)
+  geom_sf(
+    data = sf_hotspots,
+    fill = NA, color = "#e31a1c", linewidth = 0.65
+  ) +
+  # Líneas de costa (Archipiélago de Galápagos)
+  geom_sf(
+    data = tierra,
+    fill = "#bdbdbd", color = "#252525", linewidth = 0.3
+  ) +
+  # Marcador de la Isla del Coco
+  geom_sf(
+    data = sf_coco,
+    shape = 23, size = 4, fill = "#e31a1c", color = "white", stroke = 0.9
+  ) +
+  # Anotaciones cartográficas claras
+  annotate(
+    "label", x = -87.9, y = 4.55,
+    label = "Isla del Coco\n(87.06° W, 5.53° N)\nFuera del polígono OBIS",
+    size = 3.0, fontface = "bold", color = "#99000d",
+    fill = "white", alpha = 0.9, label.size = 0.3
+  ) +
+  annotate(
+    "segment", x = -87.6, y = 5.05, xend = -87.15, yend = 5.45,
+    color = "#99000d", linewidth = 0.6,
+    arrow = arrow(length = unit(0.18, "cm"))
+  ) +
+  annotate(
+    "label", x = -94.6, y = 1.85,
+    label = "Hotspots Darwin–Wolf\n(máx. S = 149 spp.)",
+    size = 2.9, color = "#252525", fill = "white", alpha = 0.88, label.size = 0.25
+  ) +
+  annotate(
+    "segment", x = -93.3, y = 1.68, xend = -92.05, yend = 1.48,
+    color = "#e31a1c", linewidth = 0.55,
+    arrow = arrow(length = unit(0.16, "cm"))
+  ) +
+  annotate(
+    "label", x = -95.2, y = -1.2,
+    label = "Hotspots Galápagos occidental/central\n(S = 107–141 spp.; 10 celdas ≥ 100 spp.\nconcentran el 85.2% de los registros)",
+    size = 2.9, color = "#252525", fill = "white", alpha = 0.88, label.size = 0.25
+  ) +
+  annotate(
+    "segment", x = -93.1, y = -0.85, xend = -91.65, yend = -0.45,
+    color = "#e31a1c", linewidth = 0.55,
+    arrow = arrow(length = unit(0.16, "cm"))
+  ) +
+  annotate(
+    "text", x = -97.8, y = 6.3, hjust = 0, vjust = 1,
+    label = "Dominio biológico OBIS (-98° a -90° W)",
+    color = "#d95f02", fontface = "bold", size = 3.1
+  ) +
+  annotate(
+    "text", x = -98.8, y = -1.8, hjust = 0, vjust = 0,
+    label = "Corredor oceanográfico ERSST / Copernicus (-99° a -86° W, -2° a 7° N)",
+    color = "#525252", fontface = "italic", size = 2.9
+  ) +
+  scale_fill_viridis_c(
+    option = "mako", direction = -1,
+    name = "Riqueza Alfa\nTeleostei (S)",
+    breaks = c(1, 25, 50, 75, 100, 125, 149)
+  ) +
+  coord_sf(xlim = c(-99.3, -85.7), ylim = c(-2.2, 7.2), expand = FALSE) +
+  labs(
+    title = "Distribución espacial de Teleostei (74 celdas de 0.25°) y brecha hacia Isla del Coco",
+    subtitle = "Borde rojo: 10 celdas hotspot (S ≥ 100 especies) | Las zonas oceánicas > 2° N presentan baja densidad observacional",
+    x = "Longitud",
+    y = "Latitud"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.background = element_rect(fill = "#e6f2fa"),
+    panel.grid.major = element_line(color = "#d0e1ec", linewidth = 0.3),
+    legend.position = "right"
+  )
 ```
 
 ### 3.2 Hipótesis H2: Recambio espacial de especies (`Beta de Jaccard`)
